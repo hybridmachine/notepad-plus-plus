@@ -1738,21 +1738,17 @@ inline HRESULT LoadIconWithScaleDown(HINSTANCE hinst, LPCWSTR pszName, int cx, i
 	(BOOL)SendMessage((hwnd), BCM_GETIDEALSIZE, 0, (LPARAM)(psize))
 
 // ============================================================
-// Progress bar messages
+// Progress bar messages (extended)
 // ============================================================
-#define PBM_SETRANGE    (WM_USER + 1)
-#define PBM_SETPOS      (WM_USER + 2)
-#define PBM_DELTAPOS    (WM_USER + 3)
-#define PBM_SETSTEP     (WM_USER + 4)
-#define PBM_STEPIT      (WM_USER + 5)
-#define PBM_SETRANGE32  (WM_USER + 6)
-#define PBM_GETRANGE    (WM_USER + 7)
-#define PBM_GETPOS      (WM_USER + 8)
-#define PBM_SETBARCOLOR (WM_USER + 9)
-#define PBM_SETBKCOLOR  0x2001
+#ifndef PBM_SETMARQUEE
 #define PBM_SETMARQUEE  (WM_USER + 10)
+#endif
+#ifndef PBM_SETSTATE
 #define PBM_SETSTATE    (WM_USER + 16)
+#endif
+#ifndef PBM_GETSTATE
 #define PBM_GETSTATE    (WM_USER + 17)
+#endif
 
 #define PBST_NORMAL  0x0001
 #define PBST_ERROR   0x0002

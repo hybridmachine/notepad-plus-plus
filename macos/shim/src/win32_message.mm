@@ -4,7 +4,9 @@
 
 #import <Cocoa/Cocoa.h>
 #include "windows.h"
+#include "commctrl.h"
 #include "handle_registry.h"
+#include "win32_controls_impl.h"
 #include "scintilla_bridge.h"
 
 // Scintilla messages start at SCI_START (2000)
@@ -30,6 +32,18 @@ LRESULT SendMessageW(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 			ScintillaBridge_sendMessage(info->nativeView, Msg,
 			                           static_cast<uintptr_t>(wParam),
 			                           static_cast<intptr_t>(lParam)));
+	}
+
+	// Common control messages: route to control handler
+	if (info->controlType != ControlType::None)
+	{
+		intptr_t controlResult = 0;
+		if (Win32Controls_HandleMessage(reinterpret_cast<void*>(hWnd), info->controlType,
+		                                 Msg, static_cast<uintptr_t>(wParam),
+		                                 static_cast<intptr_t>(lParam), controlResult))
+		{
+			return static_cast<LRESULT>(controlResult);
+		}
 	}
 
 	// Regular Win32 messages: dispatch to WndProc

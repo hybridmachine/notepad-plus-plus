@@ -314,9 +314,43 @@ target_compile_options(npp_phase2_app PRIVATE
     -Wno-deprecated-declarations
 )
 
+# ============================================================
+# Phase 3: Tabs + Multi-Document App
+# ============================================================
+# Tab control (SysTabControl32), status bar (msctls_statusbar32),
+# WM_NOTIFY dispatch, file monitoring via FSEvents, multi-document editing.
+add_executable(npp_phase3_app
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase3.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
+)
+target_include_directories(npp_phase3_app PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+    "${SHIM_INCLUDE_DIR}"
+    "${SCINTILLA_INCLUDE_DIR}"
+    "${LEXILLA_INCLUDE_DIR}"
+)
+target_link_libraries(npp_phase3_app
+    win32shim
+    scintilla_bridge
+    Scintilla
+    Lexilla
+    pugixml
+    uchardet
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework QuartzCore"
+    "-framework UniformTypeIdentifiers"
+    "-framework CoreServices"
+)
+target_compile_options(npp_phase3_app PRIVATE
+    -fobjc-arc
+    -Wno-deprecated-declarations
+)
+
 message(STATUS "=== Notepad++ macOS Port ===")
 message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
 message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
+message(STATUS "Phase 3: Tabs + Multi-Document app (npp_phase3_app)")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

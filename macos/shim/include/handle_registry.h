@@ -14,6 +14,9 @@
 // We rely on windows.h (our shim) being included before this header.
 // The shim defines HWND, WNDPROC, DWORD, HINSTANCE, LPARAM, LONG_PTR, etc.
 
+// Forward-declare ControlType (defined in win32_controls_impl.h)
+enum class ControlType;
+
 namespace HandleRegistry {
 
 struct WindowInfo
@@ -32,6 +35,7 @@ struct WindowInfo
 	std::wstring windowName;
 	bool isScintilla = false;
 	LPARAM createParam = 0;        // lpParam from CreateWindowEx
+	ControlType controlType = static_cast<ControlType>(0); // ControlType::None
 };
 
 // Registered window class info (from RegisterClass/RegisterClassEx)

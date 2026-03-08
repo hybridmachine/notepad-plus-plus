@@ -8,8 +8,7 @@
 #include "win32_controls_impl.h"
 #include "scintilla_bridge.h"
 
-// Forward declaration for control init (defined in win32_controls.mm)
-void Win32Controls_InitControl(HWND hwnd, ControlType type, HWND parent);
+// Forward declaration no longer needed — it's in win32_controls_impl.h
 
 // ============================================================
 // Window class registration
@@ -215,7 +214,14 @@ HWND CreateWindowExW(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
 
 		// Initialize control data structures after HWND is assigned
 		if (ctrlType != ControlType::None)
-			Win32Controls_InitControl(hwnd, ctrlType, hWndParent);
+		{
+			Win32Controls_InitControl(reinterpret_cast<void*>(hwnd), ctrlType,
+			                           reinterpret_cast<void*>(hWndParent));
+
+			// Set window text on the native control (e.g., button label, edit text)
+			if (lpWindowName && lpWindowName[0] != L'\0')
+				SetWindowTextW(hwnd, lpWindowName);
+		}
 
 		// Send WM_CREATE
 		if (info.wndProc)
@@ -405,8 +411,36 @@ HWND SetParent(HWND hWndChild, HWND hWndNewParent)
 }
 
 HWND GetWindow(HWND hWnd, UINT uCmd) { return nullptr; }
-HWND GetDlgItem(HWND hDlg, int nIDDlgItem) { return nullptr; }
-int GetDlgCtrlID(HWND hWnd) { return 0; }
+
+HWND GetDlgItem(HWND hDlg, int nIDDlgItem)
+{
+	if (!hDlg) return nullptr;
+
+	// Search children of hDlg for one with matching controlId
+	struct FindContext
+	{
+		int targetId;
+		HWND found;
+	};
+	FindContext ctx = {nIDDlgItem, nullptr};
+
+	HandleRegistry::getChildren(hDlg, [](HWND child, void* context) {
+		auto* ctx = static_cast<FindContext*>(context);
+		if (ctx->found) return; // already found
+
+		auto* info = HandleRegistry::getWindowInfo(child);
+		if (info && info->controlId == ctx->targetId)
+			ctx->found = child;
+	}, &ctx);
+
+	return ctx.found;
+}
+
+int GetDlgCtrlID(HWND hWnd)
+{
+	auto* info = HandleRegistry::getWindowInfo(hWnd);
+	return info ? info->controlId : 0;
+}
 
 // ============================================================
 // Window long / class long
@@ -638,28 +672,48 @@ int GetWindowTextW(HWND hWnd, LPWSTR lpString, int nMaxCount)
 	lpString[0] = L'\0';
 
 	auto* info = HandleRegistry::getWindowInfo(hWnd);
-	if (info)
+	if (!info) return 0;
+
+	// For controls, dispatch WM_GETTEXT to get native widget text
+	if (info->controlType != ControlType::None)
 	{
-		size_t maxLen = static_cast<size_t>(nMaxCount - 1);
-		size_t copyLen = info->windowName.size() < maxLen ? info->windowName.size() : maxLen;
-		wcsncpy(lpString, info->windowName.c_str(), copyLen);
-		lpString[copyLen] = L'\0';
-		return static_cast<int>(copyLen);
+		intptr_t controlResult = 0;
+		if (Win32Controls_HandleMessage(reinterpret_cast<void*>(hWnd), info->controlType,
+		                                 WM_GETTEXT, static_cast<uintptr_t>(nMaxCount),
+		                                 reinterpret_cast<intptr_t>(lpString), controlResult))
+		{
+			return static_cast<int>(controlResult);
+		}
 	}
-	return 0;
+
+	size_t maxLen = static_cast<size_t>(nMaxCount - 1);
+	size_t copyLen = info->windowName.size() < maxLen ? info->windowName.size() : maxLen;
+	wcsncpy(lpString, info->windowName.c_str(), copyLen);
+	lpString[copyLen] = L'\0';
+	return static_cast<int>(copyLen);
 }
 
 BOOL SetWindowTextW(HWND hWnd, LPCWSTR lpString)
 {
 	auto* info = HandleRegistry::getWindowInfo(hWnd);
-	if (info)
+	if (!info) return TRUE;
+
+	info->windowName = lpString ? lpString : L"";
+
+	// For controls, dispatch WM_SETTEXT to update native widget
+	if (info->controlType != ControlType::None)
 	{
-		info->windowName = lpString ? lpString : L"";
-		if (info->nativeWindow)
-		{
-			NSWindow* window = (__bridge NSWindow*)info->nativeWindow;
-			[window setTitle:WideToNSString(lpString)];
-		}
+		intptr_t controlResult = 0;
+		Win32Controls_HandleMessage(reinterpret_cast<void*>(hWnd), info->controlType,
+		                             WM_SETTEXT, 0,
+		                             reinterpret_cast<intptr_t>(lpString), controlResult);
+		return TRUE;
+	}
+
+	if (info->nativeWindow)
+	{
+		NSWindow* window = (__bridge NSWindow*)info->nativeWindow;
+		[window setTitle:WideToNSString(lpString)];
 	}
 	return TRUE;
 }

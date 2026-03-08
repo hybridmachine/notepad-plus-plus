@@ -23,8 +23,9 @@ static std::unordered_map<std::wstring, ClassInfo> s_classes;
 // Main window (first top-level window created)
 static HWND s_mainWindow = nullptr;
 
-// Mutex for thread safety (currently single-threaded but future-proof)
-static std::mutex s_mutex;
+// Recursive mutex: needed because getChildren() holds the lock while calling
+// callbacks that may call getWindowInfo() (e.g. GetDlgItem).
+static std::recursive_mutex s_mutex;
 
 // ============================================================
 // Class registration
@@ -33,7 +34,7 @@ static std::mutex s_mutex;
 bool registerClass(const std::wstring& name, WNDPROC wndProc, HINSTANCE hInst,
                    int cbWndExtra, DWORD style)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	ClassInfo info;
 	info.className = name;
@@ -48,7 +49,7 @@ bool registerClass(const std::wstring& name, WNDPROC wndProc, HINSTANCE hInst,
 
 const ClassInfo* findClass(const std::wstring& name)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	auto it = s_classes.find(name);
 	if (it != s_classes.end())
@@ -62,7 +63,14 @@ const ClassInfo* findClass(const std::wstring& name)
 
 HWND createWindow(WindowInfo info)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
+
+	// Retain native objects so ARC doesn't release them while HandleRegistry holds the void* pointers.
+	// The matching CFRelease calls are in destroyWindow().
+	if (info.nativeWindow)
+		CFRetain(info.nativeWindow);
+	if (info.nativeView)
+		CFRetain(info.nativeView);
 
 	HWND hwnd = reinterpret_cast<HWND>(s_nextHwnd++);
 	s_windows[reinterpret_cast<uintptr_t>(hwnd)] = std::move(info);
@@ -76,7 +84,7 @@ HWND createWindow(WindowInfo info)
 
 WindowInfo* getWindowInfo(HWND hwnd)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	auto it = s_windows.find(reinterpret_cast<uintptr_t>(hwnd));
 	if (it != s_windows.end())
@@ -86,7 +94,7 @@ WindowInfo* getWindowInfo(HWND hwnd)
 
 void destroyWindow(HWND hwnd)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	auto it = s_windows.find(reinterpret_cast<uintptr_t>(hwnd));
 	if (it != s_windows.end())
@@ -105,6 +113,12 @@ void destroyWindow(HWND hwnd)
 			[window close];
 		}
 
+		// Release the CFRetain from createWindow() — must happen after close/removeFromSuperview
+		if (it->second.nativeView)
+			CFRelease(it->second.nativeView);
+		if (it->second.nativeWindow)
+			CFRelease(it->second.nativeWindow);
+
 		if (s_mainWindow == hwnd)
 			s_mainWindow = nullptr;
 
@@ -114,7 +128,7 @@ void destroyWindow(HWND hwnd)
 
 HWND findByNativeView(void* nativeView)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	for (auto& [key, info] : s_windows)
 	{
@@ -126,7 +140,7 @@ HWND findByNativeView(void* nativeView)
 
 HWND findByNativeWindow(void* nativeWindow)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	for (auto& [key, info] : s_windows)
 	{
@@ -138,7 +152,7 @@ HWND findByNativeWindow(void* nativeWindow)
 
 void getChildren(HWND parent, void (*callback)(HWND child, void* context), void* context)
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 
 	for (auto& [key, info] : s_windows)
 	{
@@ -151,7 +165,7 @@ void getChildren(HWND parent, void (*callback)(HWND child, void* context), void*
 
 HWND getMainWindow()
 {
-	std::lock_guard<std::mutex> lock(s_mutex);
+	std::lock_guard<std::recursive_mutex> lock(s_mutex);
 	return s_mainWindow;
 }
 

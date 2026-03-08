@@ -347,10 +347,44 @@ target_compile_options(npp_phase3_app PRIVATE
     -Wno-deprecated-declarations
 )
 
+# ============================================================
+# Phase 4: Find/Replace + Essential Dialogs App
+# ============================================================
+# Dialog subsystem, Find/Replace, Go To Line, dialog controls
+# (Button, Edit, Static, CheckBox), GetDlgItem, dark mode.
+add_executable(npp_phase4_app
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase4.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
+)
+target_include_directories(npp_phase4_app PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+    "${SHIM_INCLUDE_DIR}"
+    "${SCINTILLA_INCLUDE_DIR}"
+    "${LEXILLA_INCLUDE_DIR}"
+)
+target_link_libraries(npp_phase4_app
+    win32shim
+    scintilla_bridge
+    Scintilla
+    Lexilla
+    pugixml
+    uchardet
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework QuartzCore"
+    "-framework UniformTypeIdentifiers"
+    "-framework CoreServices"
+)
+target_compile_options(npp_phase4_app PRIVATE
+    -fobjc-arc
+    -Wno-deprecated-declarations
+)
+
 message(STATUS "=== Notepad++ macOS Port ===")
 message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
 message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
 message(STATUS "Phase 3: Tabs + Multi-Document app (npp_phase3_app)")
+message(STATUS "Phase 4: Find/Replace + Dialogs app (npp_phase4_app)")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

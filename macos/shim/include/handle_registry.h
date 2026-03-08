@@ -16,6 +16,18 @@
 
 namespace HandleRegistry {
 
+// Control type for common controls
+enum class ControlType : uint8_t
+{
+	None = 0,
+	TabControl,
+	StatusBar,
+	ToolBar,
+	ReBar,
+	ListView,
+	TreeView,
+};
+
 struct WindowInfo
 {
 	void* nativeView = nullptr;    // NSView* (or ScintillaView* cast to void*)
@@ -31,6 +43,7 @@ struct WindowInfo
 	std::wstring className;
 	std::wstring windowName;
 	bool isScintilla = false;
+	ControlType controlType = ControlType::None;
 	LPARAM createParam = 0;        // lpParam from CreateWindowEx
 };
 

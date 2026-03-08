@@ -6,6 +6,7 @@
 #include "commctrl.h"
 #include "handle_registry.h"
 #include "scintilla_bridge.h"
+#include "win32_controls_impl.h"
 
 // ============================================================
 // Window class registration
@@ -140,6 +141,7 @@ HWND CreateWindowExW(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
 		NSString* title = WideToNSString(lpWindowName);
 		[nsWindow setTitle:title];
 		[nsWindow setReleasedWhenClosed:NO];
+		[nsWindow setTabbingMode:NSWindowTabbingModeDisallowed];
 
 		info.nativeWindow = (__bridge void*)nsWindow;
 		info.nativeView = (__bridge void*)[nsWindow contentView];
@@ -169,6 +171,54 @@ HWND CreateWindowExW(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
 				HandleRegistry::destroyWindow(hwnd);
 				return nullptr;
 			}
+		}
+
+		return hwnd;
+	}
+
+	// Common controls: Tab, StatusBar, ToolBar, ReBar, etc.
+	if (Win32Controls_IsControlClass(lpClassName))
+	{
+		auto ctrlType = Win32Controls_GetControlType(lpClassName);
+		info.controlType = ctrlType;
+
+		// Allocate HWND first so controls can reference it
+		HWND hwnd = HandleRegistry::createWindow(info);
+
+		void* parentView = nullptr;
+		if (hWndParent)
+		{
+			auto* parentInfo = HandleRegistry::getWindowInfo(hWndParent);
+			if (parentInfo)
+				parentView = parentInfo->nativeView;
+		}
+
+		void* nativeView = Win32Controls_CreateControl(
+			hwnd, lpClassName, parentView, X, Y, nWidth, nHeight, dwStyle);
+
+		// Update the registry entry with the native view
+		auto* winfo = HandleRegistry::getWindowInfo(hwnd);
+		if (winfo)
+			winfo->nativeView = nativeView;
+
+		// Send WM_CREATE
+		if (info.wndProc)
+		{
+			CREATESTRUCTW cs = {};
+			cs.lpCreateParams = lpParam;
+			cs.hInstance = hInstance;
+			cs.hMenu = hMenu;
+			cs.hwndParent = hWndParent;
+			cs.cx = nWidth;
+			cs.cy = nHeight;
+			cs.x = X;
+			cs.y = Y;
+			cs.style = static_cast<LONG>(dwStyle);
+			cs.lpszName = lpWindowName;
+			cs.lpszClass = lpClassName;
+			cs.dwExStyle = dwExStyle;
+
+			info.wndProc(hwnd, WM_CREATE, 0, reinterpret_cast<LPARAM>(&cs));
 		}
 
 		return hwnd;
@@ -231,6 +281,7 @@ BOOL DestroyWindow(HWND hWnd)
 	if (info && info->wndProc)
 		info->wndProc(hWnd, WM_DESTROY, 0, 0);
 
+	Win32Controls_DestroyControl(hWnd);
 	HandleRegistry::destroyWindow(hWnd);
 	return TRUE;
 }

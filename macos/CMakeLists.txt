@@ -314,9 +314,61 @@ target_compile_options(npp_phase2_app PRIVATE
     -Wno-deprecated-declarations
 )
 
+# ============================================================
+# File Monitor Library (FSEvents-based)
+# ============================================================
+add_library(file_monitor STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
+)
+target_include_directories(file_monitor
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+)
+target_compile_options(file_monitor PRIVATE
+    -fobjc-arc
+    -Wno-deprecated-declarations
+)
+target_link_libraries(file_monitor PUBLIC
+    "-framework Foundation"
+    "-framework CoreServices"
+)
+
+# ============================================================
+# Phase 3: Tabs + Multi-Document App
+# ============================================================
+# Tab control (TCM_* → NSSegmentedControl), status bar (SB_* → NSView),
+# multi-document tabbed editing, WM_NOTIFY dispatch, FSEvents file monitoring.
+add_executable(npp_phase3_app
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase3.mm"
+)
+target_include_directories(npp_phase3_app PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+    "${SHIM_INCLUDE_DIR}"
+    "${SCINTILLA_INCLUDE_DIR}"
+    "${LEXILLA_INCLUDE_DIR}"
+)
+target_link_libraries(npp_phase3_app
+    win32shim
+    scintilla_bridge
+    file_monitor
+    Scintilla
+    Lexilla
+    pugixml
+    uchardet
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework QuartzCore"
+    "-framework UniformTypeIdentifiers"
+    "-framework CoreServices"
+)
+target_compile_options(npp_phase3_app PRIVATE
+    -fobjc-arc
+    -Wno-deprecated-declarations
+)
+
 message(STATUS "=== Notepad++ macOS Port ===")
 message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
 message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
+message(STATUS "Phase 3: Tabs + Multi-Document app (npp_phase3_app)")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

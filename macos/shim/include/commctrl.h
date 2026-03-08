@@ -1749,7 +1749,7 @@ inline HRESULT LoadIconWithScaleDown(HINSTANCE hinst, LPCWSTR pszName, int cx, i
 #define PBM_GETRANGE    (WM_USER + 7)
 #define PBM_GETPOS      (WM_USER + 8)
 #define PBM_SETBARCOLOR (WM_USER + 9)
-#define PBM_SETBKCOLOR  0x2001
+// PBM_SETBKCOLOR already defined above as (0x2001)
 #define PBM_SETMARQUEE  (WM_USER + 10)
 #define PBM_SETSTATE    (WM_USER + 16)
 #define PBM_GETSTATE    (WM_USER + 17)

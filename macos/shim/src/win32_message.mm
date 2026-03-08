@@ -6,6 +6,7 @@
 #include "windows.h"
 #include "handle_registry.h"
 #include "scintilla_bridge.h"
+#include "win32_controls_impl.h"
 
 // Scintilla messages start at SCI_START (2000)
 #define SCI_START 2000
@@ -30,6 +31,14 @@ LRESULT SendMessageW(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 			ScintillaBridge_sendMessage(info->nativeView, Msg,
 			                           static_cast<uintptr_t>(wParam),
 			                           static_cast<intptr_t>(lParam)));
+	}
+
+	// Common control messages: route to control handlers
+	if (info->controlType != HandleRegistry::ControlType::None)
+	{
+		LRESULT result = 0;
+		if (Win32Controls_HandleMessage(hWnd, Msg, wParam, lParam, &result))
+			return result;
 	}
 
 	// Regular Win32 messages: dispatch to WndProc

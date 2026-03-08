@@ -747,13 +747,99 @@ HANDLE LoadImageW(HINSTANCE hInst, LPCWSTR name, UINT type, int cx, int cy, UINT
 // ============================================================
 // Timer
 // ============================================================
-UINT_PTR SetTimer(HWND hWnd, UINT_PTR nIDEvent, UINT uElapse, TIMERPROC lpTimerFunc)
+// Timer registry: maps (hwnd, timerID) → NSTimer
+// Using a ObjC helper to bridge the timer callback
+
+@interface Win32TimerHelper : NSObject
+@property (assign) HWND hwnd;
+@property (assign) UINT_PTR timerID;
+@property (assign) TIMERPROC timerProc;
+- (void)timerFired:(NSTimer*)timer;
+@end
+
+@implementation Win32TimerHelper
+- (void)timerFired:(NSTimer*)timer
 {
-	// TODO Phase 2: NSTimer-based implementation
-	return nIDEvent;
+	if (self.timerProc)
+	{
+		self.timerProc(self.hwnd, WM_TIMER, self.timerID, 0);
+	}
+	else
+	{
+		// Send WM_TIMER to the window's WndProc
+		auto* info = HandleRegistry::getWindowInfo(self.hwnd);
+		if (info && info->wndProc)
+			info->wndProc(self.hwnd, WM_TIMER, self.timerID, 0);
+	}
+}
+@end
+
+static NSMutableDictionary<NSString*, NSTimer*>* s_timers = nil;
+static NSMutableDictionary<NSString*, Win32TimerHelper*>* s_timerHelpers = nil;
+
+static NSString* timerKey(HWND hwnd, UINT_PTR id)
+{
+	return [NSString stringWithFormat:@"%lx_%lx",
+	        (unsigned long)(uintptr_t)hwnd, (unsigned long)id];
 }
 
-BOOL KillTimer(HWND hWnd, UINT_PTR uIDEvent) { return TRUE; }
+UINT_PTR SetTimer(HWND hWnd, UINT_PTR nIDEvent, UINT uElapse, TIMERPROC lpTimerFunc)
+{
+	@autoreleasepool {
+		if (!s_timers)
+		{
+			s_timers = [NSMutableDictionary dictionary];
+			s_timerHelpers = [NSMutableDictionary dictionary];
+		}
+
+		NSString* key = timerKey(hWnd, nIDEvent);
+
+		// Kill existing timer with same key
+		NSTimer* existing = s_timers[key];
+		if (existing)
+		{
+			[existing invalidate];
+			[s_timers removeObjectForKey:key];
+			[s_timerHelpers removeObjectForKey:key];
+		}
+
+		Win32TimerHelper* helper = [[Win32TimerHelper alloc] init];
+		helper.hwnd = hWnd;
+		helper.timerID = nIDEvent;
+		helper.timerProc = lpTimerFunc;
+
+		NSTimeInterval interval = uElapse / 1000.0;
+		if (interval < 0.001) interval = 0.001;
+
+		NSTimer* timer = [NSTimer scheduledTimerWithTimeInterval:interval
+		                                                 target:helper
+		                                               selector:@selector(timerFired:)
+		                                               userInfo:nil
+		                                                repeats:YES];
+		s_timers[key] = timer;
+		s_timerHelpers[key] = helper;
+
+		return nIDEvent;
+	}
+}
+
+BOOL KillTimer(HWND hWnd, UINT_PTR uIDEvent)
+{
+	@autoreleasepool {
+		if (!s_timers) return FALSE;
+
+		NSString* key = timerKey(hWnd, uIDEvent);
+		NSTimer* timer = s_timers[key];
+		if (timer)
+		{
+			[timer invalidate];
+			[s_timers removeObjectForKey:key];
+			[s_timerHelpers removeObjectForKey:key];
+			return TRUE;
+		}
+		return FALSE;
+	}
+}
 
 // ============================================================
 // MessageBox

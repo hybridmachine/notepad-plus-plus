@@ -769,60 +769,7 @@ BOOL ChangeClipboardChain(HWND hWndRemove, HWND hWndNewNext)
 	return TRUE;
 }
 
-BOOL OpenClipboard(HWND hWndNewOwner)
-{
-	return TRUE;
-}
-
-BOOL CloseClipboard()
-{
-	return TRUE;
-}
-
-BOOL EmptyClipboard()
-{
-	[[NSPasteboard generalPasteboard] clearContents];
-	return TRUE;
-}
-
-HANDLE SetClipboardData(UINT uFormat, HANDLE hMem)
-{
-	if (uFormat == CF_UNICODETEXT && hMem) {
-		const wchar_t* wstr = static_cast<const wchar_t*>(hMem);
-		NSString* str = [[NSString alloc] initWithBytes:wstr
-		                                         length:wcslen(wstr) * sizeof(wchar_t)
-		                                       encoding:NSUTF32LittleEndianStringEncoding];
-		[[NSPasteboard generalPasteboard] setString:str forType:NSPasteboardTypeString];
-	}
-	return hMem;
-}
-
-HANDLE GetClipboardData(UINT uFormat)
-{
-	// Stub - real implementation would convert NSPasteboard data to Win32 format
-	return nullptr;
-}
-
-BOOL IsClipboardFormatAvailable(UINT format)
-{
-	if (format == CF_UNICODETEXT || format == CF_TEXT) {
-		NSString* str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
-		return str != nil ? TRUE : FALSE;
-	}
-	return FALSE;
-}
-
-int CountClipboardFormats()
-{
-	return static_cast<int>([[[NSPasteboard generalPasteboard] types] count]);
-}
-
-UINT EnumClipboardFormats(UINT format)
-{
-	return 0;
-}
-
-HWND GetClipboardOwner()
-{
-	return nullptr;
-}
+// Clipboard functions (OpenClipboard, CloseClipboard, EmptyClipboard,
+// SetClipboardData, GetClipboardData, IsClipboardFormatAvailable,
+// CountClipboardFormats, EnumClipboardFormats, GetClipboardOwner)
+// are implemented in win32_menu.mm

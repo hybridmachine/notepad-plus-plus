@@ -33,6 +33,7 @@ target_link_libraries(win32shim PUBLIC
     "-framework CoreText"
     "-framework CoreFoundation"
     "-framework Security"
+    "-framework UniformTypeIdentifiers"
 )
 
 # ============================================================
@@ -283,20 +284,20 @@ target_link_libraries(win32shim PUBLIC
 )
 
 # ============================================================
-# Phase 1: Window + Scintilla App
+# Phase 2: File I/O + Menus App
 # ============================================================
-# A runnable macOS app with a window containing a ScintillaView editor.
-# Demonstrates: NSApplication, window creation, Scintilla integration.
-add_executable(npp_phase1_app
+# Win32 menu APIs backed by NSMenu, file open/save via dialogs,
+# WM_COMMAND dispatch from menus to WndProc, timers, clipboard.
+add_executable(npp_phase2_app
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/main.mm"
 )
-target_include_directories(npp_phase1_app PRIVATE
+target_include_directories(npp_phase2_app PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/platform"
     "${SHIM_INCLUDE_DIR}"
     "${SCINTILLA_INCLUDE_DIR}"
     "${LEXILLA_INCLUDE_DIR}"
 )
-target_link_libraries(npp_phase1_app
+target_link_libraries(npp_phase2_app
     win32shim
     scintilla_bridge
     Scintilla
@@ -306,15 +307,16 @@ target_link_libraries(npp_phase1_app
     "-framework Foundation"
     "-framework AppKit"
     "-framework QuartzCore"
+    "-framework UniformTypeIdentifiers"
 )
-target_compile_options(npp_phase1_app PRIVATE
+target_compile_options(npp_phase2_app PRIVATE
     -fobjc-arc
     -Wno-deprecated-declarations
 )
 
 message(STATUS "=== Notepad++ macOS Port ===")
 message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
-message(STATUS "Phase 1: Window + Scintilla app (npp_phase1_app)")
+message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

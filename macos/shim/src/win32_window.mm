@@ -5,7 +5,11 @@
 #include "windows.h"
 #include "commctrl.h"
 #include "handle_registry.h"
+#include "win32_controls_impl.h"
 #include "scintilla_bridge.h"
+
+// Forward declaration for control init (defined in win32_controls.mm)
+void Win32Controls_InitControl(HWND hwnd, ControlType type, HWND parent);
 
 // ============================================================
 // Window class registration
@@ -184,7 +188,18 @@ HWND CreateWindowExW(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
 				parentView = parentInfo->nativeView;
 		}
 
-		if (parentView)
+		// Check if this is a known common control class
+		ControlType ctrlType = Win32Controls_GetControlType(className);
+		if (ctrlType != ControlType::None && parentView)
+		{
+			info.controlType = ctrlType;
+
+			void* ctrlView = Win32Controls_CreateControl(
+				ctrlType, parentView, X, Y, nWidth, nHeight, dwStyle, dwExStyle);
+			if (ctrlView)
+				info.nativeView = ctrlView;
+		}
+		else if (parentView)
 		{
 			NSView* parent = (__bridge NSView*)parentView;
 			CGFloat parentH = parent.bounds.size.height;
@@ -197,6 +212,10 @@ HWND CreateWindowExW(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
 		}
 
 		HWND hwnd = HandleRegistry::createWindow(info);
+
+		// Initialize control data structures after HWND is assigned
+		if (ctrlType != ControlType::None)
+			Win32Controls_InitControl(hwnd, ctrlType, hWndParent);
 
 		// Send WM_CREATE
 		if (info.wndProc)

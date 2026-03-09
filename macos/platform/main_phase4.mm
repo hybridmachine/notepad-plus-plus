@@ -549,6 +549,50 @@ static void createFindReplaceDlg(bool replaceMode)
 		{
 			NSWindow* win = (__bridge NSWindow*)info->nativeWindow;
 
+			// Resize the window to match the mode (keep top edge fixed)
+			int dlgHeight = replaceMode ? 240 : 180;
+			NSRect contentRect = [win contentRectForFrameRect:win.frame];
+			CGFloat heightDiff = dlgHeight - contentRect.size.height;
+			NSRect newFrame = win.frame;
+			newFrame.origin.y -= heightDiff;
+			newFrame.size.height += heightDiff;
+			[win setFrame:newFrame display:YES];
+
+			// Reposition ALL controls (resize changes Cocoa Y-flip base)
+			int dlgWidth = 450;
+			int cbY = replaceMode ? 75 : 45;
+			int btnY = replaceMode ? 110 : 75;
+			int rBtnY = 145;
+			int statusY = replaceMode ? 210 : 115;
+			int btnW = 90;
+			int btnH = 28;
+			int btnGap = 8;
+
+			// Find row (fixed Win32 positions, but need recalc after resize)
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_LABEL), 15, 15, 80, 20, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_EDIT), 100, 12, 230, 24, TRUE);
+
+			// Replace row
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_REPLACE_LABEL), 15, 45, 80, 20, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_REPLACE_EDIT), 100, 42, 230, 24, TRUE);
+
+			// Checkboxes
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_MATCH_CASE), 15, cbY, 120, 20, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_WHOLE_WORD), 145, cbY, 120, 20, TRUE);
+
+			// Find buttons
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_NEXT), 15, btnY, btnW, btnH, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_PREV), 15 + btnW + btnGap, btnY, btnW, btnH, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_COUNT), 15 + 2 * (btnW + btnGap), btnY, 70, btnH, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_CLOSE), dlgWidth - 85, btnY, 70, btnH, TRUE);
+
+			// Replace buttons
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_REPLACE_ONE), 15, rBtnY, btnW, btnH, TRUE);
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_REPLACE_ALL), 15 + btnW + btnGap, rBtnY, btnW + 10, btnH, TRUE);
+
+			// Status label
+			MoveWindow(GetDlgItem(g_findDlgHwnd, IDC_FIND_STATUS), 15, statusY, dlgWidth - 30, 20, TRUE);
+
 			// Show/hide replace controls
 			HWND hReplace = GetDlgItem(g_findDlgHwnd, IDC_REPLACE_EDIT);
 			HWND hReplaceLabel = GetDlgItem(g_findDlgHwnd, IDC_REPLACE_LABEL);

@@ -100,12 +100,12 @@ static std::unordered_map<uintptr_t, TabControlData> s_tabControls;
 	if (parentHwnd)
 	{
 		auto* parentInfo = HandleRegistry::getWindowInfo(parentHwnd);
-		if (parentInfo && parentInfo->wndProc)
+		auto* tabInfo = HandleRegistry::getWindowInfo(self.tabHwnd);
+		if (parentInfo && parentInfo->wndProc && tabInfo)
 		{
 			NMHDR nmhdr;
 			nmhdr.hwndFrom = self.tabHwnd;
-			nmhdr.idFrom = static_cast<UINT_PTR>(
-				HandleRegistry::getWindowInfo(self.tabHwnd)->controlId);
+			nmhdr.idFrom = static_cast<UINT_PTR>(tabInfo->controlId);
 			nmhdr.code = TCN_SELCHANGE;
 			parentInfo->wndProc(parentHwnd, WM_NOTIFY, nmhdr.idFrom,
 			                    reinterpret_cast<LPARAM>(&nmhdr));
@@ -390,7 +390,9 @@ void* Win32Controls_CreateControl(ControlType type, void* parentView,
 			NSRect frame = NSMakeRect(x, parentH - y - height, width, height);
 			NSButton* btn = [[NSButton alloc] initWithFrame:frame];
 
-			if (style & BS_GROUPBOX)
+			unsigned long btnType = style & BS_TYPEMASK;
+
+			if (btnType == BS_GROUPBOX)
 			{
 				btn.bezelStyle = NSBezelStyleSmallSquare;
 				[btn setButtonType:NSButtonTypeMomentaryLight];
@@ -404,13 +406,13 @@ void* Win32Controls_CreateControl(ControlType type, void* parentView,
 				[parent addSubview:box];
 				return (__bridge void*)box;
 			}
-			else if (style & BS_AUTOCHECKBOX || style & BS_CHECKBOX ||
-			         style & BS_AUTO3STATE || style & BS_3STATE)
+			else if (btnType == BS_AUTOCHECKBOX || btnType == BS_CHECKBOX ||
+			         btnType == BS_AUTO3STATE || btnType == BS_3STATE)
 			{
 				[btn setButtonType:NSButtonTypeSwitch];
 				btn.bezelStyle = NSBezelStyleRegularSquare;
 			}
-			else if (style & BS_AUTORADIOBUTTON || style & BS_RADIOBUTTON)
+			else if (btnType == BS_AUTORADIOBUTTON || btnType == BS_RADIOBUTTON)
 			{
 				[btn setButtonType:NSButtonTypeRadio];
 				btn.bezelStyle = NSBezelStyleRegularSquare;
@@ -420,7 +422,7 @@ void* Win32Controls_CreateControl(ControlType type, void* parentView,
 				// Push button (BS_PUSHBUTTON or BS_DEFPUSHBUTTON)
 				[btn setButtonType:NSButtonTypeMomentaryPushIn];
 				btn.bezelStyle = NSBezelStyleRounded;
-				if (style & BS_DEFPUSHBUTTON)
+				if (btnType == BS_DEFPUSHBUTTON)
 					btn.keyEquivalent = @"\r";
 			}
 
@@ -735,16 +737,16 @@ static bool HandleTabMessage(HWND hwnd, unsigned int msg, uintptr_t wParam, intp
 
 		case TCM_ADJUSTRECT:
 		{
-			// wParam TRUE = given window rect, return display rect
-			// wParam FALSE = given display rect, return window rect
+			// wParam TRUE  = given display rect, return window rect (larger)
+			// wParam FALSE = given window rect, return display rect (smaller)
 			// For simplicity, just shrink/expand by tab bar height
 			RECT* pRect = reinterpret_cast<RECT*>(lParam);
 			if (pRect)
 			{
-				if (wParam) // larger
-					pRect->top += 28; // tab bar height
-				else
-					pRect->top -= 28;
+				if (wParam) // larger: expand upward to include tab bar
+					pRect->top -= 28; // tab bar height
+				else // smaller: shrink to exclude tab bar
+					pRect->top += 28;
 			}
 			result = 0;
 			return true;
@@ -814,7 +816,7 @@ static bool HandleStatusBarMessage(HWND hwnd, unsigned int msg, uintptr_t wParam
 		case SB_SETPARTS:
 		{
 			int count = static_cast<int>(wParam);
-			const int* widths = reinterpret_cast<const int*>(lParam);
+			const int* edges = reinterpret_cast<const int*>(lParam);
 			sb.partWidths.clear();
 			sb.partTexts.resize(count);
 
@@ -825,12 +827,31 @@ static bool HandleStatusBarMessage(HWND hwnd, unsigned int msg, uintptr_t wParam
 				[barView.partTexts removeAllObjects];
 			}
 
+			// Win32 SB_SETPARTS takes cumulative right-edge coordinates.
+			// Convert to per-part widths for internal storage.
+			int prevRight = 0;
 			for (int i = 0; i < count; ++i)
 			{
-				sb.partWidths.push_back(widths ? widths[i] : -1);
+				int partWidth = -1;
+				if (edges)
+				{
+					int edge = edges[i];
+					if (edge == -1)
+					{
+						partWidth = -1; // fills remaining space
+					}
+					else
+					{
+						partWidth = edge - prevRight;
+						if (partWidth < 0)
+							partWidth = 0;
+						prevRight = edge;
+					}
+				}
+				sb.partWidths.push_back(partWidth);
 				if (barView)
 				{
-					[barView.partWidths addObject:@(widths ? widths[i] : -1)];
+					[barView.partWidths addObject:@(partWidth)];
 					[barView.partTexts addObject:@""];
 				}
 			}
@@ -879,7 +900,11 @@ static bool HandleStatusBarMessage(HWND hwnd, unsigned int msg, uintptr_t wParam
 		{
 			int part = static_cast<int>(wParam);
 			if (part >= 0 && part < static_cast<int>(sb.partTexts.size()))
-				result = static_cast<intptr_t>(sb.partTexts[part].size());
+			{
+				// Win32: LOWORD = text length, HIWORD = drawing type flags
+				// We always use type 0 (no owner-draw), so high word is 0.
+				result = static_cast<intptr_t>(MAKELONG(sb.partTexts[part].size(), 0));
+			}
 			else
 				result = 0;
 			return true;
@@ -1251,13 +1276,37 @@ static bool HandleToolbarMessage(HWND hwnd, unsigned int msg, uintptr_t wParam, 
 			RECT* pRect = reinterpret_cast<RECT*>(lParam);
 			if (pRect)
 			{
-				int index = (msg == TB_COMMANDTOINDEX) ? static_cast<int>(wParam) : static_cast<int>(wParam);
-				pRect->left = index * tb.buttonSizeCx;
-				pRect->top = 0;
-				pRect->right = pRect->left + tb.buttonSizeCx;
-				pRect->bottom = tb.buttonSizeCy;
+				int index = -1;
+				if (msg == TB_GETITEMRECT)
+				{
+					// TB_GETITEMRECT: wParam is a 0-based button index
+					index = static_cast<int>(wParam);
+				}
+				else // TB_GETRECT
+				{
+					// TB_GETRECT: wParam is a command ID; map it to a button index
+					LRESULT idx = SendMessageW(hwnd, TB_COMMANDTOINDEX, wParam, 0);
+					index = static_cast<int>(idx);
+				}
+
+				if (index >= 0)
+				{
+					pRect->left = index * tb.buttonSizeCx;
+					pRect->top = 0;
+					pRect->right = pRect->left + tb.buttonSizeCx;
+					pRect->bottom = tb.buttonSizeCy;
+					result = TRUE;
+				}
+				else
+				{
+					memset(pRect, 0, sizeof(RECT));
+					result = FALSE;
+				}
 			}
-			result = TRUE;
+			else
+			{
+				result = FALSE;
+			}
 			return true;
 		}
 

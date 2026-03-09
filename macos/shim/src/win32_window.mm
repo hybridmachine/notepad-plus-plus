@@ -189,14 +189,17 @@ HWND CreateWindowExW(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
 
 		// Check if this is a known common control class
 		ControlType ctrlType = Win32Controls_GetControlType(className);
-		if (ctrlType != ControlType::None && parentView)
+		if (ctrlType != ControlType::None)
 		{
 			info.controlType = ctrlType;
 
-			void* ctrlView = Win32Controls_CreateControl(
-				ctrlType, parentView, X, Y, nWidth, nHeight, dwStyle, dwExStyle);
-			if (ctrlView)
-				info.nativeView = ctrlView;
+			if (parentView)
+			{
+				void* ctrlView = Win32Controls_CreateControl(
+					ctrlType, parentView, X, Y, nWidth, nHeight, dwStyle, dwExStyle);
+				if (ctrlView)
+					info.nativeView = ctrlView;
+			}
 		}
 		else if (parentView)
 		{
@@ -253,8 +256,15 @@ BOOL DestroyWindow(HWND hWnd)
 		return FALSE;
 
 	auto* info = HandleRegistry::getWindowInfo(hWnd);
-	if (info && info->wndProc)
-		info->wndProc(hWnd, WM_DESTROY, 0, 0);
+	if (info)
+	{
+		if (info->wndProc)
+			info->wndProc(hWnd, WM_DESTROY, 0, 0);
+
+		// Clean up per-control data structures
+		if (info->controlType != ControlType::None)
+			Win32Controls_DestroyControl(reinterpret_cast<void*>(hWnd), info->controlType);
+	}
 
 	HandleRegistry::destroyWindow(hWnd);
 	return TRUE;

@@ -31,7 +31,7 @@ public:
 	// Stop watching a directory.
 	void removeDirectory(const std::wstring& path);
 
-	// Set callback for immediate notification (called on FSEvents thread).
+	// Set callback for immediate notification (called on the main thread).
 	void setCallback(FileMonitorCallback callback);
 
 	// Pop the next event from the queue (thread-safe). Returns false if empty.

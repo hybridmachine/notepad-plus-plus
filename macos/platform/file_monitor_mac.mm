@@ -44,6 +44,7 @@ struct FileMonitorMac::Impl
 };
 
 // FSEvents callback
+// Note: kFSEventStreamCreateFlagUseCFTypes means eventPaths is a CFArrayRef of CFStringRef.
 static void fseventsCallback(ConstFSEventStreamRef streamRef,
                               void* clientCallBackInfo,
                               size_t numEvents,
@@ -52,7 +53,7 @@ static void fseventsCallback(ConstFSEventStreamRef streamRef,
                               const FSEventStreamEventId eventIds[])
 {
 	auto* impl = static_cast<FileMonitorMac::Impl*>(clientCallBackInfo);
-	char** paths = static_cast<char**>(eventPaths);
+	CFArrayRef pathArray = static_cast<CFArrayRef>(eventPaths);
 
 	for (size_t i = 0; i < numEvents; ++i)
 	{
@@ -70,7 +71,9 @@ static void fseventsCallback(ConstFSEventStreamRef streamRef,
 		else
 			action = FileMonitorAction::Modified; // default
 
-		std::wstring widePath = UTF8ToWide(paths[i]);
+		CFStringRef cfPath = static_cast<CFStringRef>(CFArrayGetValueAtIndex(pathArray, i));
+		NSString* nsPath = (__bridge NSString*)cfPath;
+		std::wstring widePath = UTF8ToWide([nsPath UTF8String]);
 
 		{
 			std::lock_guard<std::mutex> lock(impl->mutex);
@@ -170,16 +173,24 @@ bool FileMonitorMac::pop(FileMonitorAction& action, std::wstring& path)
 
 void FileMonitorMac::terminate()
 {
-	std::lock_guard<std::mutex> lock(m_impl->mutex);
-	if (m_impl->terminated) return;
-	m_impl->terminated = true;
+	// Copy streams under lock, then stop them without holding the mutex.
+	// FSEventStreamStop can block waiting for in-flight callbacks that
+	// also acquire the mutex, so holding it here would deadlock.
+	std::vector<FSEventStreamRef> streamsToStop;
+	{
+		std::lock_guard<std::mutex> lock(m_impl->mutex);
+		if (m_impl->terminated) return;
+		m_impl->terminated = true;
 
-	for (auto stream : m_impl->streams)
+		streamsToStop = std::move(m_impl->streams);
+		m_impl->streams.clear();
+		m_impl->watchedPaths.clear();
+	}
+
+	for (auto stream : streamsToStop)
 	{
 		FSEventStreamStop(stream);
 		FSEventStreamInvalidate(stream);
 		FSEventStreamRelease(stream);
 	}
-	m_impl->streams.clear();
-	m_impl->watchedPaths.clear();
 }

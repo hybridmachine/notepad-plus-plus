@@ -20,7 +20,13 @@ enum class ControlType
 	ReBar,
 	Tooltip,
 	ListView,
-	TreeView
+	TreeView,
+	Button,
+	Edit,
+	Static,
+	ComboBox,
+	ListBox,
+	UpDown
 };
 
 // Check if className is a known common control class
@@ -43,5 +49,8 @@ bool Win32Controls_HandleMessage(void* hwnd, ControlType type,
 
 // Destroy a control and clean up associated data.
 void Win32Controls_DestroyControl(void* hwnd, ControlType type);
+
+// Initialize a newly created control after HWND assignment.
+void Win32Controls_InitControl(void* hwnd, ControlType type, void* parent);
 
 #endif // __APPLE__

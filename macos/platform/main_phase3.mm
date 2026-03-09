@@ -269,11 +269,19 @@ static void closeTab(int tabIndex)
 	SendMessageW(g_tabHwnd, TCM_DELETEITEM, tabIndex, 0);
 	g_documents.erase(g_documents.begin() + tabIndex);
 
-	// Adjust active tab
-	if (g_activeTab >= static_cast<int>(g_documents.size()))
-		g_activeTab = static_cast<int>(g_documents.size()) - 1;
-	if (g_activeTab == tabIndex && g_activeTab > 0)
+	// Adjust active tab index to account for the removed element
+	if (tabIndex < g_activeTab)
+	{
+		// Closed a tab before the active one — shift index left
 		--g_activeTab;
+	}
+	else if (tabIndex == g_activeTab)
+	{
+		// Closed the active tab — clamp to valid range
+		if (g_activeTab >= static_cast<int>(g_documents.size()))
+			g_activeTab = static_cast<int>(g_documents.size()) - 1;
+	}
+	// If tabIndex > g_activeTab, no adjustment needed
 
 	SendMessageW(g_tabHwnd, TCM_SETCURSEL, g_activeTab, 0);
 	restoreScintillaState(g_activeTab);

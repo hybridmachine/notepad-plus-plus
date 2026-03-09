@@ -685,6 +685,9 @@ typedef struct {
 #define EM_GETMARGINS          0x00D4
 #define EM_SETLIMITTEXT        EM_LIMITTEXT
 #define EM_GETLIMITTEXT        0x00D5
+#define EM_SCROLLCARET         0x00B7
+#define EM_POSFROMCHAR         0x00D6
+#define EM_CHARFROMPOS         0x00D7
 
 // Edit control notifications
 #define EN_SETFOCUS  0x0100
@@ -723,6 +726,12 @@ typedef struct {
 
 #define STN_CLICKED 0
 #define STN_DBLCLK  1
+
+// Static control messages
+#define STM_SETICON  0x0170
+#define STM_GETICON  0x0171
+#define STM_SETIMAGE 0x0172
+#define STM_GETIMAGE 0x0173
 
 // ============================================================
 // Listbox styles

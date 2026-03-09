@@ -149,6 +149,14 @@ enum {
 	SCI_GETCURLINE = 2027,
 	SCI_POSITIONFROMLINE = 2167,
 
+	// Edit operations
+	SCI_UNDO = 2176,
+	SCI_REDO = 2011,
+	SCI_CUT = 2177,
+	SCI_COPY = 2178,
+	SCI_PASTE = 2179,
+	SCI_SELECTALL = 2013,
+
 	// Style
 	SCI_STYLEGETFONT = 2486,
 	SCI_STYLEGETSIZE = 2485,
@@ -298,6 +306,7 @@ struct DocumentData
 	intptr_t firstVisibleLine = 0;
 	bool modified = false;
 	int languageIndex = 2; // Default: C++
+	std::vector<int> bookmarkedLines; // Persisted across tab switches
 };
 
 // ============================================================
@@ -375,6 +384,18 @@ static void saveScintillaState()
 	doc.anchorPos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETANCHOR, 0, 0);
 	doc.firstVisibleLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETFIRSTVISIBLELINE, 0, 0);
 	doc.modified = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETMODIFY, 0, 0) != 0;
+
+	// Save bookmarked lines
+	doc.bookmarkedLines.clear();
+	intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
+	intptr_t line = 0;
+	while (line < lineCount)
+	{
+		line = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERNEXT, line, BOOKMARK_MASK);
+		if (line < 0) break;
+		doc.bookmarkedLines.push_back(static_cast<int>(line));
+		++line;
+	}
 }
 
 static void restoreScintillaState(int tabIndex)
@@ -390,6 +411,10 @@ static void restoreScintillaState(int tabIndex)
 	if (!doc.modified)
 		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSAVEPOINT, 0, 0);
 	ScintillaBridge_sendMessage(g_scintillaView, SCI_EMPTYUNDOBUFFER, 0, 0);
+
+	// Restore bookmarks
+	for (int bkLine : doc.bookmarkedLines)
+		ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERADD, bkLine, BOOKMARK_MARKER);
 }
 
 // ============================================================
@@ -639,6 +664,9 @@ static bool doFindNext(bool forward)
 	if (pos >= 0)
 	{
 		intptr_t targetEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTARGETEND, 0, 0);
+		// Advance past zero-length matches to avoid infinite Find Next loop
+		if (targetEnd == pos && pos < docLen)
+			targetEnd = pos + 1;
 		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, pos, targetEnd);
 		ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
 		updateFindStatus(L"Match found");
@@ -665,6 +693,8 @@ static bool doFindNext(bool forward)
 		if (pos >= 0)
 		{
 			intptr_t targetEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTARGETEND, 0, 0);
+			if (targetEnd == pos && pos < docLen)
+				targetEnd = pos + 1;
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, pos, targetEnd);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
 			updateFindStatus(L"Wrapped around");
@@ -702,8 +732,17 @@ static int doCount()
 		if (pos < 0) break;
 		++count;
 		intptr_t targetEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTARGETEND, 0, 0);
+		if (targetEnd <= pos)
+		{
+			// Zero-length match: advance by 1 to continue counting
+			if (pos < docLen)
+			{
+				searchStart = pos + 1;
+				continue;
+			}
+			break;
+		}
 		searchStart = targetEnd;
-		if (targetEnd <= pos) break; // Safety: avoid infinite loop on zero-length regex match
 	}
 
 	wchar_t buf[64];
@@ -768,7 +807,14 @@ static void doReplaceAll()
 
 		searchStart = pos + static_cast<intptr_t>(replaceLen);
 		docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
-		if (searchStart <= pos) break; // Safety for zero-length replacements
+		// Safety for zero-length replacements: advance at least 1
+		if (searchStart <= pos)
+		{
+			if (searchStart < docLen)
+				++searchStart;
+			else
+				break;
+		}
 	}
 
 	wchar_t buf[64];
@@ -1196,7 +1242,7 @@ static void showAutoComplete()
 	std::string currentWord;
 	for (intptr_t i = 0; i < docLen; ++i)
 	{
-		char ch = docText[i];
+		unsigned char ch = static_cast<unsigned char>(docText[i]);
 		if (isalnum(ch) || ch == '_')
 		{
 			currentWord += ch;
@@ -1213,7 +1259,8 @@ static void showAutoComplete()
 
 	// Filter words that start with the partial text (case-insensitive prefix match)
 	std::string partialLower(partial);
-	std::transform(partialLower.begin(), partialLower.end(), partialLower.begin(), ::tolower);
+	std::transform(partialLower.begin(), partialLower.end(), partialLower.begin(),
+	               [](unsigned char c){ return std::tolower(c); });
 
 	std::vector<std::string> matches;
 	for (const auto& w : words)
@@ -1221,7 +1268,8 @@ static void showAutoComplete()
 		if (static_cast<intptr_t>(w.length()) <= wordLen) continue;
 		// Case-insensitive prefix compare
 		std::string wLower = w.substr(0, wordLen);
-		std::transform(wLower.begin(), wLower.end(), wLower.begin(), ::tolower);
+		std::transform(wLower.begin(), wLower.end(), wLower.begin(),
+		               [](unsigned char c){ return std::tolower(c); });
 		if (wLower == partialLower)
 			matches.push_back(w);
 	}
@@ -1348,7 +1396,7 @@ static void showPreferencesDlg()
 		[content addSubview:tabLabel];
 
 		NSPopUpButton* tabPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(130, 122, 80, 26) pullsDown:NO];
-		NSArray* tabSizes = @[@"2", @"3", @"4", @"8"];
+		NSArray* tabSizes = @[@"2", @"3", @"4", @"5", @"6", @"7", @"8"];
 		for (NSString* t in tabSizes)
 			[tabPopup addItemWithTitle:t];
 		[tabPopup selectItemWithTitle:[NSString stringWithFormat:@"%d", g_tabWidth]];
@@ -1385,22 +1433,13 @@ static void showPreferencesDlg()
 		cancelButton.tag = 0;
 		[content addSubview:cancelButton];
 
-		// Run as modal sheet
-		__block BOOL accepted = NO;
-		[okButton setTarget:nil];
-		[cancelButton setTarget:nil];
-
-		// Use an NSModalSession instead
-		NSModalSession session = [NSApp beginModalSessionForWindow:panel];
-		__block BOOL running = YES;
-
+		// Run as modal
 		okButton.target = NSApp;
 		okButton.action = @selector(stopModal);
 		cancelButton.target = NSApp;
 		cancelButton.action = @selector(abortModal);
 
 		NSModalResponse result = [NSApp runModalForWindow:panel];
-		[NSApp endModalSession:session];
 
 		if (result == NSModalResponseStop)
 		{
@@ -1712,6 +1751,20 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 				case IDM_FILE_SAVE:
 					saveCurrentFile();
 					return 0;
+				case IDM_FILE_SAVEAS:
+				{
+					// Force Save As by temporarily clearing the file path
+					if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+					{
+						std::wstring origPath = g_documents[g_activeTab].filePath;
+						g_documents[g_activeTab].filePath.clear();
+						saveCurrentFile();
+						// If user cancelled, restore original path
+						if (g_documents[g_activeTab].filePath.empty())
+							g_documents[g_activeTab].filePath = origPath;
+					}
+					return 0;
+				}
 				case IDM_FILE_CLOSE:
 					closeTab(g_activeTab);
 					return 0;
@@ -1723,6 +1776,31 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 				case IDM_FILE_RECENT_CLEAR:
 					g_recentFiles.clear();
 					rebuildRecentMenu();
+					return 0;
+
+				case IDM_EDIT_UNDO:
+					if (g_scintillaView)
+						ScintillaBridge_sendMessage(g_scintillaView, SCI_UNDO, 0, 0);
+					return 0;
+				case IDM_EDIT_REDO:
+					if (g_scintillaView)
+						ScintillaBridge_sendMessage(g_scintillaView, SCI_REDO, 0, 0);
+					return 0;
+				case IDM_EDIT_CUT:
+					if (g_scintillaView)
+						ScintillaBridge_sendMessage(g_scintillaView, SCI_CUT, 0, 0);
+					return 0;
+				case IDM_EDIT_COPY:
+					if (g_scintillaView)
+						ScintillaBridge_sendMessage(g_scintillaView, SCI_COPY, 0, 0);
+					return 0;
+				case IDM_EDIT_PASTE:
+					if (g_scintillaView)
+						ScintillaBridge_sendMessage(g_scintillaView, SCI_PASTE, 0, 0);
+					return 0;
+				case IDM_EDIT_SELECTALL:
+					if (g_scintillaView)
+						ScintillaBridge_sendMessage(g_scintillaView, SCI_SELECTALL, 0, 0);
 					return 0;
 
 				case IDM_VIEW_WORDWRAP:
@@ -2122,6 +2200,55 @@ static void applyAppearance()
 	configureScintilla(g_scintillaView);
 	applyAppearance();
 
+	// Register Scintilla notification callback for margin clicks
+	ScintillaBridge_setNotifyCallback(g_scintillaView, (intptr_t)g_mainHwnd,
+		[](intptr_t windowid, unsigned int iMessage, uintptr_t wParam, uintptr_t lParam) {
+			// iMessage 1002 = WM_NOTIFY in Cocoa Scintilla convention
+			if (iMessage == 1002 && lParam)
+			{
+				// lParam points to a Cocoa Scintilla notification struct
+				// The notification code is at offset of nmhdr.code
+				struct SciNotifyHeader {
+					void* hwndFrom;
+					uintptr_t idFrom;
+					unsigned int code;
+				};
+				struct SciNotify {
+					SciNotifyHeader nmhdr;
+					intptr_t position;
+					int ch;
+					int modifiers;
+					int modificationType;
+					const char* text;
+					intptr_t length;
+					intptr_t linesAdded;
+					int message;
+					uintptr_t wParam;
+					intptr_t sLParam;
+					intptr_t line;
+					int foldLevelNow;
+					int foldLevelPrev;
+					int margin;
+				};
+				auto* scn = reinterpret_cast<const SciNotify*>(lParam);
+
+				if (scn->nmhdr.code == 2010) // SCN_MARGINCLICK
+				{
+					if (scn->margin == 1 && g_scintillaView) // Bookmark margin
+					{
+						intptr_t line = ScintillaBridge_sendMessage(g_scintillaView,
+							SCI_LINEFROMPOSITION, scn->position, 0);
+						intptr_t markers = ScintillaBridge_sendMessage(g_scintillaView,
+							SCI_MARKERGET, line, 0);
+						if (markers & BOOKMARK_MASK)
+							ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERDELETE, line, BOOKMARK_MARKER);
+						else
+							ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERADD, line, BOOKMARK_MARKER);
+					}
+				}
+			}
+		});
+
 	// Create first document
 	const char* welcomeText =
 		"// Welcome to Notepad++ on macOS — Phase 5!\n"
@@ -2129,17 +2256,17 @@ static void applyAppearance()
 		"// What's new in Phase 5:\n"
 		"//   - Regex search in Find/Replace (\"Regular expression\" checkbox)\n"
 		"//   - Recent files list (File > Recent Files)\n"
-		"//   - Bookmarks: toggle (Cmd+F2), next (F2), prev (Shift+F2)\n"
+		"//   - Bookmarks: toggle (Ctrl+F2), next (F2), prev (Shift+F2)\n"
 		"//     Click the bookmark margin to toggle bookmarks\n"
 		"//   - Auto-completion (Ctrl+Space)\n"
 		"//   - Context menu (right-click)\n"
-		"//   - Preferences dialog (Cmd+, — font, tab width)\n"
+		"//   - Preferences dialog (Ctrl+, — font, tab width)\n"
 		"//   - Language selection (Language menu — 17 languages)\n"
 		"//   - Auto-detect language from file extension\n"
 		"//\n"
 		"// Try:\n"
-		"//   Cmd+F with \"Regular expression\" to search with regex\n"
-		"//   Cmd+F2 to toggle a bookmark on this line\n"
+		"//   Ctrl+F with \"Regular expression\" to search with regex\n"
+		"//   Ctrl+F2 to toggle a bookmark on this line\n"
 		"//   F2 / Shift+F2 to jump between bookmarks\n"
 		"//   Ctrl+Space for word auto-completion\n"
 		"//   Right-click for context menu\n"

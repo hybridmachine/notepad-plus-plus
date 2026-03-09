@@ -99,6 +99,8 @@ enum {
 	SCI_SETCARETLINEVISIBLE = 2096,
 	SCI_SETCARETLINEBACK = 2098,
 	SCI_SETUSETABS = 2124,
+	SCI_STYLESETBACK = 2052,
+	SCI_SETCARETFORE = 2069,
 	SCI_SETPROPERTY = 4004,
 	SCI_SETKEYWORDS = 4005,
 	SCI_SETLEXERLANGUAGE = 4006,
@@ -294,10 +296,19 @@ static void closeTab(int tabIndex)
 	SendMessageW(g_tabHwnd, TCM_DELETEITEM, tabIndex, 0);
 	g_documents.erase(g_documents.begin() + tabIndex);
 
-	if (g_activeTab >= static_cast<int>(g_documents.size()))
-		g_activeTab = static_cast<int>(g_documents.size()) - 1;
-	if (g_activeTab == tabIndex && g_activeTab > 0)
+	// Adjust active tab index based on which tab was closed
+	if (tabIndex < g_activeTab)
+	{
+		// Closed a tab before the active one: active index shifts left
 		--g_activeTab;
+	}
+	else if (tabIndex == g_activeTab)
+	{
+		// Closed the active tab: clamp to the new last index if needed
+		if (g_activeTab >= static_cast<int>(g_documents.size()))
+			g_activeTab = static_cast<int>(g_documents.size()) - 1;
+	}
+	// If tabIndex > g_activeTab, no adjustment needed
 
 	SendMessageW(g_tabHwnd, TCM_SETCURSEL, g_activeTab, 0);
 	restoreScintillaState(g_activeTab);
@@ -713,7 +724,7 @@ static void createFindReplaceDlg(bool replaceMode)
 		g_findDlgHwnd, reinterpret_cast<HMENU>(IDC_FIND_CLOSE), nullptr, nullptr);
 
 	// Replace buttons row
-	int rBtnY = replaceMode ? 145 : 145;
+	int rBtnY = 145;
 	HWND hReplaceOne = CreateWindowExW(0, L"Button", L"Replace",
 		WS_CHILD | (replaceMode ? WS_VISIBLE : 0) | BS_PUSHBUTTON,
 		15, rBtnY, btnW, btnH,
@@ -1202,7 +1213,7 @@ static void applyAppearance()
 		{
 			// Dark mode colors
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 32, 0xD4D4D4);
-			ScintillaBridge_sendMessage(g_scintillaView, 2052 /*SCI_STYLESETBACK*/, 32, 0x1E1E1E);
+			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBACK, 32, 0x1E1E1E);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLECLEARALL, 0, 0);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETCARETLINEBACK, 0x2A2A2A, 0);
 			// Syntax colors for dark mode
@@ -1214,13 +1225,13 @@ static void applyAppearance()
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 9, 0xC586C0);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBOLD, 5, 1);
 			// Set caret color to white
-			ScintillaBridge_sendMessage(g_scintillaView, 2069 /*SCI_SETCARETFORE*/, 0xAEAFAD, 0);
+			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETCARETFORE, 0xAEAFAD, 0);
 		}
 		else
 		{
 			// Light mode colors (default)
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 32, 0x000000);
-			ScintillaBridge_sendMessage(g_scintillaView, 2052 /*SCI_STYLESETBACK*/, 32, 0xFFFFFF);
+			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBACK, 32, 0xFFFFFF);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLECLEARALL, 0, 0);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETCARETLINEBACK, 0xF0F0F0, 0);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 1, 0x008000);
@@ -1230,7 +1241,7 @@ static void applyAppearance()
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 6, 0x800080);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 9, 0x808080);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBOLD, 5, 1);
-			ScintillaBridge_sendMessage(g_scintillaView, 2069 /*SCI_SETCARETFORE*/, 0x000000, 0);
+			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETCARETFORE, 0x000000, 0);
 		}
 	}
 }

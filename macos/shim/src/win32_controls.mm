@@ -1682,7 +1682,7 @@ static bool HandleEditMessage(HWND hwnd, unsigned int msg, uintptr_t wParam, int
 					if (start == 0 && end == -1)
 						[editor selectAll:nil];
 					else
-						editor.selectedRange = NSMakeRange(start, end - start);
+						editor.selectedRange = NSMakeRange(MIN(start, end), abs(end - start));
 				}
 			}
 			result = 0;
@@ -1953,7 +1953,11 @@ static bool HandleComboBoxMessage(HWND hwnd, unsigned int msg, uintptr_t wParam,
 				if (index >= 0 && index < combo.numberOfItems)
 					[combo selectItemAtIndex:index];
 				else
-					[combo deselectItemAtIndex:combo.indexOfSelectedItem];
+					{
+					NSInteger currentIndex = combo.indexOfSelectedItem;
+					if (currentIndex >= 0)
+						[combo deselectItemAtIndex:currentIndex];
+				}
 			}
 			else if (popup)
 			{
@@ -2222,17 +2226,39 @@ void Win32Controls_InitControl(void* hwndVoid, ControlType type, void* parentVoi
 			auto* info = HandleRegistry::getWindowInfo(hwnd);
 			if (info && info->nativeView)
 			{
-				if (!s_buttonTargets)
-					s_buttonTargets = [NSMutableDictionary dictionary];
+				id view = (__bridge id)info->nativeView;
+				if ([view isKindOfClass:[NSButton class]])
+				{
+					if (!s_buttonTargets)
+						s_buttonTargets = [NSMutableDictionary dictionary];
 
-				Win32ButtonTarget* target = [[Win32ButtonTarget alloc] init];
-				target.buttonHwnd = hwnd;
+					Win32ButtonTarget* target = [[Win32ButtonTarget alloc] init];
+					target.buttonHwnd = hwnd;
 
-				NSButton* btn = (__bridge NSButton*)info->nativeView;
-				btn.target = target;
-				btn.action = @selector(buttonClicked:);
+					NSButton* btn = (NSButton*)view;
+					btn.target = target;
+					btn.action = @selector(buttonClicked:);
 
-				s_buttonTargets[@(key)] = target;
+					s_buttonTargets[@(key)] = target;
+				}
+			}
+			break;
+		}
+		case ControlType::Edit:
+		{
+			auto* info = HandleRegistry::getWindowInfo(hwnd);
+			if (info && info->nativeView)
+			{
+				if (!s_editTargets)
+					s_editTargets = [NSMutableDictionary dictionary];
+
+				Win32EditTarget* target = [[Win32EditTarget alloc] init];
+				target.editHwnd = hwnd;
+
+				NSTextField* field = (__bridge NSTextField*)info->nativeView;
+				field.delegate = target;
+
+				s_editTargets[@(key)] = target;
 			}
 			break;
 		}

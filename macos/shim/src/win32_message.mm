@@ -120,7 +120,6 @@ BOOL IsDialogMessageW(HWND hDlg, LPMSG lpMsg)
 // ============================================================
 
 // Dialog result storage (per-dialog HWND)
-#include <unordered_map>
 static std::unordered_map<uintptr_t, INT_PTR> s_dialogResults;
 static std::unordered_map<uintptr_t, bool> s_dialogEnded;
 
@@ -236,8 +235,8 @@ HWND CreateDialogIndirectParamW(HINSTANCE hInstance, const void* lpTemplate,
 		{
 			// Standard DLGTEMPLATE
 			const uint8_t* p = static_cast<const uint8_t*>(lpTemplate);
-			int16_t cx = *reinterpret_cast<const int16_t*>(p + 10);
-			int16_t cy = *reinterpret_cast<const int16_t*>(p + 12);
+			int16_t cx = *reinterpret_cast<const int16_t*>(p + 14);
+			int16_t cy = *reinterpret_cast<const int16_t*>(p + 16);
 			width = static_cast<int>(cx * 1.75);
 			height = static_cast<int>(cy * 1.75);
 			if (width < 100) width = 400;
@@ -267,7 +266,11 @@ INT_PTR DialogBoxParamW(HINSTANCE hInstance, LPCWSTR lpTemplateName,
 	if (!dlgHwnd) return -1;
 
 	auto* info = HandleRegistry::getWindowInfo(dlgHwnd);
-	if (!info || !info->nativeWindow) return -1;
+	if (!info || !info->nativeWindow)
+	{
+		HandleRegistry::destroyWindow(dlgHwnd);
+		return -1;
+	}
 
 	uintptr_t key = reinterpret_cast<uintptr_t>(dlgHwnd);
 	s_dialogEnded[key] = false;

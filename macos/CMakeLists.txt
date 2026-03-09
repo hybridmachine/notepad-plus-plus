@@ -380,11 +380,45 @@ target_compile_options(npp_phase4_app PRIVATE
     -Wno-deprecated-declarations
 )
 
+# ============================================================
+# Phase 5: Advanced Editor Features App
+# ============================================================
+# Regex search, recent files, bookmarks, auto-completion,
+# context menus, preferences dialog, language selection.
+add_executable(npp_phase5_app
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase5.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
+)
+target_include_directories(npp_phase5_app PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+    "${SHIM_INCLUDE_DIR}"
+    "${SCINTILLA_INCLUDE_DIR}"
+    "${LEXILLA_INCLUDE_DIR}"
+)
+target_link_libraries(npp_phase5_app
+    win32shim
+    scintilla_bridge
+    Scintilla
+    Lexilla
+    pugixml
+    uchardet
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework QuartzCore"
+    "-framework UniformTypeIdentifiers"
+    "-framework CoreServices"
+)
+target_compile_options(npp_phase5_app PRIVATE
+    -fobjc-arc
+    -Wno-deprecated-declarations
+)
+
 message(STATUS "=== Notepad++ macOS Port ===")
 message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
 message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
 message(STATUS "Phase 3: Tabs + Multi-Document app (npp_phase3_app)")
 message(STATUS "Phase 4: Find/Replace + Dialogs app (npp_phase4_app)")
+message(STATUS "Phase 5: Advanced Editor Features app (npp_phase5_app)")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

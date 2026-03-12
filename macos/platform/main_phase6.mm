@@ -2527,12 +2527,7 @@ static void applyAppearance()
 						else
 							ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERADD, line, BOOKMARK_MARKER);
 					}
-					else if (scn->margin == 2 && g_scintillaView) // Fold margin
-					{
-						intptr_t line = ScintillaBridge_sendMessage(g_scintillaView,
-							SCI_LINEFROMPOSITION, scn->position, 0);
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_TOGGLEFOLD, line, 0);
-					}
+					// Fold margin (margin 2) is handled automatically by SC_AUTOMATICFOLD_CLICK
 				}
 			}
 		});
@@ -2682,24 +2677,6 @@ static void applyAppearance()
 	}
 }
 
-// Handle margin clicks (for bookmark toggle)
-- (void)handleMarginClick:(int)line margin:(int)margin
-{
-	if (!g_scintillaView) return;
-
-	if (margin == 1) // bookmark margin
-	{
-		intptr_t markers = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERGET, line, 0);
-		if (markers & BOOKMARK_MASK)
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERDELETE, line, BOOKMARK_MARKER);
-		else
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERADD, line, BOOKMARK_MARKER);
-	}
-	else if (margin == 2) // fold margin
-	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_TOGGLEFOLD, line, 0);
-	}
-}
 
 @end
 

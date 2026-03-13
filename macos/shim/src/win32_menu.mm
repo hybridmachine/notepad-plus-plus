@@ -352,6 +352,11 @@ BOOL SetMenu(HWND hWnd, HMENU hMenu)
 	}
 
 	[NSApp setMainMenu:mainMenu];
+
+	// Update the menu registry so hMenu now resolves to mainMenu
+	// (the original NSMenu is empty after moving items)
+	s_menuMap[@(reinterpret_cast<uintptr_t>(hMenu))] = mainMenu;
+
 	return TRUE;
 }
 

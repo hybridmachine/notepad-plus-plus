@@ -697,6 +697,7 @@ static int g_activeTab2 = -1;
 static HWND g_tabHwnd2 = nullptr;
 static NSView* g_editorContainer = nil;
 static NSView* g_editorContainer2 = nil;
+static NSView* g_sciContainer2 = nil; // Sub-container for scintillaView2 in right pane
 
 // Accessor helpers for split view
 static void*& activeScintillaView() { return g_activeView == 0 ? g_scintillaView : g_scintillaView2; }
@@ -729,61 +730,72 @@ static std::wstring NSStringToWide(NSString* str)
 // ============================================================
 // Scintilla state save/restore
 // ============================================================
-static void saveScintillaState()
+static void saveViewState(void* sci, std::vector<DocumentData>& docs, int tabIdx)
 {
-	if (g_activeTab < 0 || g_activeTab >= static_cast<int>(g_documents.size()))
+	if (tabIdx < 0 || tabIdx >= static_cast<int>(docs.size()))
 		return;
-	if (!g_scintillaView) return;
+	if (!sci) return;
 
-	auto& doc = g_documents[g_activeTab];
-	intptr_t len = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTEXTLENGTH, 0, 0);
+	auto& doc = docs[tabIdx];
+	intptr_t len = ScintillaBridge_sendMessage(sci, SCI_GETTEXTLENGTH, 0, 0);
 	if (len >= 0)
 	{
 		doc.content.resize(len + 1);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTEXT, len + 1,
+		ScintillaBridge_sendMessage(sci, SCI_GETTEXT, len + 1,
 		                            (intptr_t)doc.content.data());
 		doc.content.resize(len);
 	}
-	doc.cursorPos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	doc.anchorPos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETANCHOR, 0, 0);
-	doc.firstVisibleLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETFIRSTVISIBLELINE, 0, 0);
-	doc.modified = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETMODIFY, 0, 0) != 0;
+	doc.cursorPos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	doc.anchorPos = ScintillaBridge_sendMessage(sci, SCI_GETANCHOR, 0, 0);
+	doc.firstVisibleLine = ScintillaBridge_sendMessage(sci, SCI_GETFIRSTVISIBLELINE, 0, 0);
+	doc.modified = ScintillaBridge_sendMessage(sci, SCI_GETMODIFY, 0, 0) != 0;
 
 	// Save bookmarked lines
 	doc.bookmarkedLines.clear();
-	intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
+	intptr_t lineCount = ScintillaBridge_sendMessage(sci, SCI_GETLINECOUNT, 0, 0);
 	intptr_t line = 0;
 	while (line < lineCount)
 	{
-		line = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERNEXT, line, BOOKMARK_MASK);
+		line = ScintillaBridge_sendMessage(sci, SCI_MARKERNEXT, line, BOOKMARK_MASK);
 		if (line < 0) break;
 		doc.bookmarkedLines.push_back(static_cast<int>(line));
 		++line;
 	}
 }
 
-static void restoreScintillaState(int tabIndex)
+static void saveScintillaState()
 {
-	if (tabIndex < 0 || tabIndex >= static_cast<int>(g_documents.size()))
-		return;
-	if (!g_scintillaView) return;
+	saveViewState(g_scintillaView, g_documents, g_activeTab);
+}
 
-	const auto& doc = g_documents[tabIndex];
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTEXT, 0, (intptr_t)doc.content.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETFIRSTVISIBLELINE, doc.firstVisibleLine, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, doc.anchorPos, doc.cursorPos);
+static void restoreViewToScintilla(void* sci, const std::vector<DocumentData>& docs, int tabIndex)
+{
+	if (tabIndex < 0 || tabIndex >= static_cast<int>(docs.size()))
+		return;
+	if (!sci) return;
+
+	const auto& doc = docs[tabIndex];
+	ScintillaBridge_sendMessage(sci, SCI_SETTEXT, 0, (intptr_t)doc.content.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_SETFIRSTVISIBLELINE, doc.firstVisibleLine, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETSEL, doc.anchorPos, doc.cursorPos);
 	if (!doc.modified)
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSAVEPOINT, 0, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_EMPTYUNDOBUFFER, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETSAVEPOINT, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_EMPTYUNDOBUFFER, 0, 0);
 
 	// Restore bookmarks
 	for (int bkLine : doc.bookmarkedLines)
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERADD, bkLine, BOOKMARK_MARKER);
+		ScintillaBridge_sendMessage(sci, SCI_MARKERADD, bkLine, BOOKMARK_MARKER);
+}
+
+static void restoreScintillaState(int tabIndex)
+{
+	restoreViewToScintilla(g_scintillaView, g_documents, tabIndex);
 }
 
 // ============================================================
 // Language / lexer switching
 // ============================================================
+static void applyLanguageToView(void* sci, int langIndex);
 static void applyLanguage(int langIndex);
 
 // Forward declarations
@@ -792,58 +804,77 @@ static void applyAppearance();
 // ============================================================
 // Tab management
 // ============================================================
-static void switchToTab(int tabIndex)
+static void switchToTabInView(int viewIndex, int tabIndex)
 {
-	if (tabIndex < 0 || tabIndex >= static_cast<int>(g_documents.size()))
-		return;
-	if (tabIndex == g_activeTab)
-		return;
+	auto& docs = (viewIndex == 0) ? g_documents : g_documents2;
+	auto& activeTab = (viewIndex == 0) ? g_activeTab : g_activeTab2;
+	void* sci = (viewIndex == 0) ? g_scintillaView : g_scintillaView2;
+	HWND tabHwnd = (viewIndex == 0) ? g_tabHwnd : g_tabHwnd2;
 
-	saveScintillaState();
-	g_activeTab = tabIndex;
-	SendMessageW(g_tabHwnd, TCM_SETCURSEL, tabIndex, 0);
-	restoreScintillaState(tabIndex);
-	applyLanguage(g_documents[tabIndex].languageIndex);
+	if (tabIndex < 0 || tabIndex >= static_cast<int>(docs.size()))
+		return;
+	if (tabIndex == activeTab)
+		return;
+	if (!sci) return;
 
-	const auto& doc = g_documents[tabIndex];
+	saveViewState(sci, docs, activeTab);
+	activeTab = tabIndex;
+	if (tabHwnd)
+		SendMessageW(tabHwnd, TCM_SETCURSEL, tabIndex, 0);
+	restoreViewToScintilla(sci, docs, tabIndex);
+	applyLanguageToView(sci, docs[tabIndex].languageIndex);
+
+	const auto& doc = docs[tabIndex];
 	NSString* title = WideToNSString(doc.title.c_str());
 	[g_mainWindow setTitle:[NSString stringWithFormat:@"Notepad++ — %@", title]];
 }
 
-static int addNewTab(const std::wstring& title, const std::string& content,
-                      const std::wstring& filePath = L"", int langIndex = 2)
+static void switchToTab(int tabIndex)
 {
-	saveScintillaState();
+	switchToTabInView(g_activeView, tabIndex);
+}
+
+static int addNewTabToView(int viewIndex, const std::wstring& title, const std::string& content,
+                            const std::wstring& filePath = L"", int langIndex = 2)
+{
+	auto& docs = (viewIndex == 0) ? g_documents : g_documents2;
+	auto& activeTab = (viewIndex == 0) ? g_activeTab : g_activeTab2;
+	void* sci = (viewIndex == 0) ? g_scintillaView : g_scintillaView2;
+	HWND tabHwnd = (viewIndex == 0) ? g_tabHwnd : g_tabHwnd2;
+
+	if (!sci) return -1;
+
+	saveViewState(sci, docs, activeTab);
 
 	DocumentData doc;
 	doc.title = title;
 	doc.content = content;
 	doc.filePath = filePath;
 	doc.languageIndex = langIndex;
-	g_documents.push_back(doc);
+	docs.push_back(doc);
 
-	int newIndex = static_cast<int>(g_documents.size()) - 1;
+	int newIndex = static_cast<int>(docs.size()) - 1;
 
-	TCITEMW tcItem = {};
-	tcItem.mask = TCIF_TEXT;
-	wchar_t titleBuf[256];
-	wcsncpy(titleBuf, title.c_str(), 255);
-	titleBuf[255] = L'\0';
-	tcItem.pszText = titleBuf;
-	SendMessageW(g_tabHwnd, TCM_INSERTITEMW, newIndex, reinterpret_cast<LPARAM>(&tcItem));
-
-	g_activeTab = newIndex;
-	SendMessageW(g_tabHwnd, TCM_SETCURSEL, newIndex, 0);
-
-	if (g_scintillaView)
+	if (tabHwnd)
 	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTEXT, 0, (intptr_t)content.c_str());
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_GOTOPOS, 0, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_EMPTYUNDOBUFFER, 0, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSAVEPOINT, 0, 0);
+		TCITEMW tcItem = {};
+		tcItem.mask = TCIF_TEXT;
+		wchar_t titleBuf[256];
+		wcsncpy(titleBuf, title.c_str(), 255);
+		titleBuf[255] = L'\0';
+		tcItem.pszText = titleBuf;
+		SendMessageW(tabHwnd, TCM_INSERTITEMW, newIndex, reinterpret_cast<LPARAM>(&tcItem));
+		SendMessageW(tabHwnd, TCM_SETCURSEL, newIndex, 0);
 	}
 
-	applyLanguage(langIndex);
+	activeTab = newIndex;
+
+	ScintillaBridge_sendMessage(sci, SCI_SETTEXT, 0, (intptr_t)content.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_GOTOPOS, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_EMPTYUNDOBUFFER, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETSAVEPOINT, 0, 0);
+
+	applyLanguageToView(sci, langIndex);
 
 	NSString* nsTitle = WideToNSString(title.c_str());
 	[g_mainWindow setTitle:[NSString stringWithFormat:@"Notepad++ — %@", nsTitle]];
@@ -851,46 +882,66 @@ static int addNewTab(const std::wstring& title, const std::string& content,
 	return newIndex;
 }
 
-static void closeTab(int tabIndex)
+static int addNewTab(const std::wstring& title, const std::string& content,
+                      const std::wstring& filePath = L"", int langIndex = 2)
 {
-	if (tabIndex < 0 || tabIndex >= static_cast<int>(g_documents.size()))
-		return;
+	return addNewTabToView(g_activeView, title, content, filePath, langIndex);
+}
 
-	if (g_documents.size() <= 1)
+static void closeTabFromView(int viewIndex, int tabIndex)
+{
+	auto& docs = (viewIndex == 0) ? g_documents : g_documents2;
+	auto& activeTab = (viewIndex == 0) ? g_activeTab : g_activeTab2;
+	void* sci = (viewIndex == 0) ? g_scintillaView : g_scintillaView2;
+	HWND tabHwnd = (viewIndex == 0) ? g_tabHwnd : g_tabHwnd2;
+
+	if (tabIndex < 0 || tabIndex >= static_cast<int>(docs.size()))
+		return;
+	if (!sci) return;
+
+	if (docs.size() <= 1)
 	{
-		g_documents[0] = DocumentData();
-		if (g_scintillaView)
+		docs[0] = DocumentData();
+		ScintillaBridge_sendMessage(sci, SCI_CLEARALL, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_EMPTYUNDOBUFFER, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETSAVEPOINT, 0, 0);
+		if (tabHwnd)
 		{
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_CLEARALL, 0, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_EMPTYUNDOBUFFER, 0, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSAVEPOINT, 0, 0);
+			TCITEMW tcItem = {};
+			tcItem.mask = TCIF_TEXT;
+			wchar_t untitled[] = L"Untitled";
+			tcItem.pszText = untitled;
+			SendMessageW(tabHwnd, TCM_SETITEMW, 0, reinterpret_cast<LPARAM>(&tcItem));
 		}
-		TCITEMW tcItem = {};
-		tcItem.mask = TCIF_TEXT;
-		wchar_t title[] = L"Untitled";
-		tcItem.pszText = title;
-		SendMessageW(g_tabHwnd, TCM_SETITEMW, 0, reinterpret_cast<LPARAM>(&tcItem));
 		[g_mainWindow setTitle:@"Notepad++ — Untitled"];
 		return;
 	}
 
-	SendMessageW(g_tabHwnd, TCM_DELETEITEM, tabIndex, 0);
-	g_documents.erase(g_documents.begin() + tabIndex);
+	if (tabHwnd)
+		SendMessageW(tabHwnd, TCM_DELETEITEM, tabIndex, 0);
+	docs.erase(docs.begin() + tabIndex);
 
-	if (tabIndex < g_activeTab)
-		--g_activeTab;
-	else if (tabIndex == g_activeTab)
+	if (tabIndex < activeTab)
+		--activeTab;
+	else if (tabIndex == activeTab)
 	{
-		if (g_activeTab >= static_cast<int>(g_documents.size()))
-			g_activeTab = static_cast<int>(g_documents.size()) - 1;
+		if (activeTab >= static_cast<int>(docs.size()))
+			activeTab = static_cast<int>(docs.size()) - 1;
 	}
 
-	SendMessageW(g_tabHwnd, TCM_SETCURSEL, g_activeTab, 0);
-	restoreScintillaState(g_activeTab);
+	if (tabHwnd)
+		SendMessageW(tabHwnd, TCM_SETCURSEL, activeTab, 0);
+	restoreViewToScintilla(sci, docs, activeTab);
+	applyLanguageToView(sci, docs[activeTab].languageIndex);
 
-	const auto& doc = g_documents[g_activeTab];
+	const auto& doc = docs[activeTab];
 	NSString* title = WideToNSString(doc.title.c_str());
 	[g_mainWindow setTitle:[NSString stringWithFormat:@"Notepad++ — %@", title]];
+}
+
+static void closeTab(int tabIndex)
+{
+	closeTabFromView(g_activeView, tabIndex);
 }
 
 // ============================================================
@@ -898,13 +949,17 @@ static void closeTab(int tabIndex)
 // ============================================================
 static void updateStatusBar()
 {
-	if (!g_scintillaView || !g_statusBarHwnd) return;
+	void* sci = activeScintillaView();
+	if (!sci || !g_statusBarHwnd) return;
 
-	intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	intptr_t line = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, pos, 0);
-	intptr_t col = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCOLUMN, pos, 0);
-	intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
-	intptr_t docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
+	auto& docs = activeDocuments();
+	int tabIdx = activeTabIndex();
+
+	intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	intptr_t line = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, pos, 0);
+	intptr_t col = ScintillaBridge_sendMessage(sci, SCI_GETCOLUMN, pos, 0);
+	intptr_t lineCount = ScintillaBridge_sendMessage(sci, SCI_GETLINECOUNT, 0, 0);
+	intptr_t docLen = ScintillaBridge_sendMessage(sci, SCI_GETLENGTH, 0, 0);
 
 	wchar_t buf[128];
 	swprintf(buf, 128, L"Ln %ld, Col %ld", (long)(line + 1), (long)(col + 1));
@@ -915,9 +970,9 @@ static void updateStatusBar()
 
 	// Show language name
 	const char* langName = "Normal Text";
-	if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+	if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
 	{
-		int langIdx = g_documents[g_activeTab].languageIndex;
+		int langIdx = docs[tabIdx].languageIndex;
 		if (langIdx >= 0 && langIdx < g_numLanguages)
 			langName = g_languages[langIdx].name;
 	}
@@ -927,21 +982,21 @@ static void updateStatusBar()
 
 	// Encoding
 	const char* encName = "UTF-8";
-	if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
-		encName = encodingName(g_documents[g_activeTab].encoding);
+	if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
+		encName = encodingName(docs[tabIdx].encoding);
 	NSString* nsEnc = [NSString stringWithUTF8String:encName];
 	std::wstring wEnc = NSStringToWide(nsEnc);
 	SendMessageW(g_statusBarHwnd, SB_SETTEXTW, 3, reinterpret_cast<LPARAM>(wEnc.c_str()));
 
 	// EOL mode
 	const char* eolN = "LF";
-	if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
-		eolN = eolName(g_documents[g_activeTab].eolMode);
+	if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
+		eolN = eolName(docs[tabIdx].eolMode);
 	NSString* nsEol = [NSString stringWithUTF8String:eolN];
 	std::wstring wEol = NSStringToWide(nsEol);
 	SendMessageW(g_statusBarHwnd, SB_SETTEXTW, 4, reinterpret_cast<LPARAM>(wEol.c_str()));
 
-	swprintf(buf, 128, L"Doc %d/%d", g_activeTab + 1, (int)g_documents.size());
+	swprintf(buf, 128, L"Doc %d/%d", tabIdx + 1, (int)docs.size());
 	SendMessageW(g_statusBarHwnd, SB_SETTEXTW, 5, reinterpret_cast<LPARAM>(buf));
 }
 
@@ -1017,38 +1072,39 @@ static int buildSearchFlags()
 
 static bool doFindNext(bool forward)
 {
-	if (!g_scintillaView || g_findText.empty()) return false;
+	void* sci = activeScintillaView();
+	if (!sci || g_findText.empty()) return false;
 
 	NSString* nsFind = WideToNSString(g_findText.c_str());
 	const char* utf8Find = [nsFind UTF8String];
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEARCHFLAGS, buildSearchFlags(), 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETSEARCHFLAGS, buildSearchFlags(), 0);
 
-	intptr_t docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
+	intptr_t docLen = ScintillaBridge_sendMessage(sci, SCI_GETLENGTH, 0, 0);
 
 	if (forward)
 	{
-		intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, selEnd, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, docLen, 0);
+		intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, selEnd, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, docLen, 0);
 	}
 	else
 	{
-		intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, selStart, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, 0, 0);
+		intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, selStart, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, 0, 0);
 	}
 
-	intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_SEARCHINTARGET,
+	intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_SEARCHINTARGET,
 	                                            strlen(utf8Find), (intptr_t)utf8Find);
 	if (pos >= 0)
 	{
-		intptr_t targetEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTARGETEND, 0, 0);
+		intptr_t targetEnd = ScintillaBridge_sendMessage(sci, SCI_GETTARGETEND, 0, 0);
 		// Advance past zero-length matches to avoid infinite Find Next loop
 		if (targetEnd == pos && pos < docLen)
 			targetEnd = pos + 1;
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, pos, targetEnd);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETSEL, pos, targetEnd);
+		ScintillaBridge_sendMessage(sci, SCI_SCROLLCARET, 0, 0);
 		updateFindStatus(L"Match found");
 		return true;
 	}
@@ -1057,26 +1113,26 @@ static bool doFindNext(bool forward)
 		// Wrap around
 		if (forward)
 		{
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, 0, 0);
-			intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, selEnd, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, 0, 0);
+			intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, selEnd, 0);
 		}
 		else
 		{
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, docLen, 0);
-			intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, selStart, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, docLen, 0);
+			intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, selStart, 0);
 		}
 
-		pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_SEARCHINTARGET,
+		pos = ScintillaBridge_sendMessage(sci, SCI_SEARCHINTARGET,
 		                                  strlen(utf8Find), (intptr_t)utf8Find);
 		if (pos >= 0)
 		{
-			intptr_t targetEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTARGETEND, 0, 0);
+			intptr_t targetEnd = ScintillaBridge_sendMessage(sci, SCI_GETTARGETEND, 0, 0);
 			if (targetEnd == pos && pos < docLen)
 				targetEnd = pos + 1;
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, pos, targetEnd);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETSEL, pos, targetEnd);
+			ScintillaBridge_sendMessage(sci, SCI_SCROLLCARET, 0, 0);
 			updateFindStatus(L"Wrapped around");
 			return true;
 		}
@@ -1091,27 +1147,28 @@ static bool doFindNext(bool forward)
 
 static int doCount()
 {
-	if (!g_scintillaView || g_findText.empty()) return 0;
+	void* sci = activeScintillaView();
+	if (!sci || g_findText.empty()) return 0;
 
 	NSString* nsFind = WideToNSString(g_findText.c_str());
 	const char* utf8Find = [nsFind UTF8String];
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEARCHFLAGS, buildSearchFlags(), 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETSEARCHFLAGS, buildSearchFlags(), 0);
 
-	intptr_t docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
+	intptr_t docLen = ScintillaBridge_sendMessage(sci, SCI_GETLENGTH, 0, 0);
 	int count = 0;
 	intptr_t searchStart = 0;
 	size_t findLen = strlen(utf8Find);
 
 	while (searchStart < docLen)
 	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, searchStart, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, docLen, 0);
-		intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_SEARCHINTARGET,
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, searchStart, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, docLen, 0);
+		intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_SEARCHINTARGET,
 		                                            findLen, (intptr_t)utf8Find);
 		if (pos < 0) break;
 		++count;
-		intptr_t targetEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTARGETEND, 0, 0);
+		intptr_t targetEnd = ScintillaBridge_sendMessage(sci, SCI_GETTARGETEND, 0, 0);
 		if (targetEnd <= pos)
 		{
 			// Zero-length match: advance by 1 to continue counting
@@ -1133,10 +1190,11 @@ static int doCount()
 
 static void doReplaceOne()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-	intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
+	intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+	intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
 
 	if (selStart == selEnd)
 	{
@@ -1147,9 +1205,9 @@ static void doReplaceOne()
 	NSString* nsReplace = WideToNSString(g_replaceText.c_str());
 	const char* utf8Replace = [nsReplace UTF8String];
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, selStart, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, selEnd, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET,
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, selStart, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, selEnd, 0);
+	ScintillaBridge_sendMessage(sci, SCI_REPLACETARGET,
 	                            strlen(utf8Replace), (intptr_t)utf8Replace);
 
 	doFindNext(true);
@@ -1158,16 +1216,17 @@ static void doReplaceOne()
 
 static void doReplaceAll()
 {
-	if (!g_scintillaView || g_findText.empty()) return;
+	void* sci = activeScintillaView();
+	if (!sci || g_findText.empty()) return;
 
 	NSString* nsFind = WideToNSString(g_findText.c_str());
 	NSString* nsReplace = WideToNSString(g_replaceText.c_str());
 	const char* utf8Find = [nsFind UTF8String];
 	const char* utf8Replace = [nsReplace UTF8String];
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEARCHFLAGS, buildSearchFlags(), 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETSEARCHFLAGS, buildSearchFlags(), 0);
 
-	intptr_t docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
+	intptr_t docLen = ScintillaBridge_sendMessage(sci, SCI_GETLENGTH, 0, 0);
 	int count = 0;
 	intptr_t searchStart = 0;
 	size_t findLen = strlen(utf8Find);
@@ -1175,18 +1234,18 @@ static void doReplaceAll()
 
 	while (searchStart < docLen)
 	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, searchStart, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, docLen, 0);
-		intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_SEARCHINTARGET,
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, searchStart, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, docLen, 0);
+		intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_SEARCHINTARGET,
 		                                            findLen, (intptr_t)utf8Find);
 		if (pos < 0) break;
 
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET,
+		ScintillaBridge_sendMessage(sci, SCI_REPLACETARGET,
 		                            replaceLen, (intptr_t)utf8Replace);
 		++count;
 
 		searchStart = pos + static_cast<intptr_t>(replaceLen);
-		docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
+		docLen = ScintillaBridge_sendMessage(sci, SCI_GETLENGTH, 0, 0);
 		// Safety for zero-length replacements: advance at least 1
 		if (searchStart <= pos)
 		{
@@ -1458,23 +1517,26 @@ static void createFindReplaceDlg(bool replaceMode)
 	}
 
 	// Pre-fill find text from current selection
-	if (g_scintillaView)
 	{
-		intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-		intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
-		if (selEnd > selStart && (selEnd - selStart) < 256)
+		void* sci = activeScintillaView();
+		if (sci)
 		{
-			char utf8Buf[512] = {};
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELTEXT, 0, (intptr_t)utf8Buf);
-			NSString* sel = [NSString stringWithUTF8String:utf8Buf];
-			if (sel.length > 0)
+			intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+			intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
+			if (selEnd > selStart && (selEnd - selStart) < 256)
 			{
-				NSData* data = [sel dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
-				if (data && data.length > 0)
+				char utf8Buf[512] = {};
+				ScintillaBridge_sendMessage(sci, SCI_GETSELTEXT, 0, (intptr_t)utf8Buf);
+				NSString* sel = [NSString stringWithUTF8String:utf8Buf];
+				if (sel.length > 0)
 				{
-					std::wstring wsel(reinterpret_cast<const wchar_t*>(data.bytes),
-					                  data.length / sizeof(wchar_t));
-					SetDlgItemTextW(g_findDlgHwnd, IDC_FIND_EDIT, wsel.c_str());
+					NSData* data = [sel dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
+					if (data && data.length > 0)
+					{
+						std::wstring wsel(reinterpret_cast<const wchar_t*>(data.bytes),
+						                  data.length / sizeof(wchar_t));
+						SetDlgItemTextW(g_findDlgHwnd, IDC_FIND_EDIT, wsel.c_str());
+					}
 				}
 			}
 		}
@@ -1489,11 +1551,12 @@ static void createFindReplaceDlg(bool replaceMode)
 
 static void showGoToLineDlg()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
-	intptr_t curPos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	intptr_t curLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, curPos, 0);
+	intptr_t lineCount = ScintillaBridge_sendMessage(sci, SCI_GETLINECOUNT, 0, 0);
+	intptr_t curPos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	intptr_t curLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, curPos, 0);
 
 	@autoreleasepool {
 		NSAlert* alert = [[NSAlert alloc] init];
@@ -1515,8 +1578,8 @@ static void showGoToLineDlg()
 			int lineNum = input.intValue;
 			if (lineNum > 0 && lineNum <= static_cast<int>(lineCount))
 			{
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_GOTOLINE, lineNum - 1, 0);
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
+				ScintillaBridge_sendMessage(sci, SCI_GOTOLINE, lineNum - 1, 0);
+				ScintillaBridge_sendMessage(sci, SCI_SCROLLCARET, 0, 0);
 			}
 		}
 	}
@@ -1528,65 +1591,69 @@ static void showGoToLineDlg()
 
 static void toggleBookmark()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	intptr_t line = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, pos, 0);
+	intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	intptr_t line = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, pos, 0);
 
-	intptr_t markers = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERGET, line, 0);
+	intptr_t markers = ScintillaBridge_sendMessage(sci, SCI_MARKERGET, line, 0);
 	if (markers & BOOKMARK_MASK)
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERDELETE, line, BOOKMARK_MARKER);
+		ScintillaBridge_sendMessage(sci, SCI_MARKERDELETE, line, BOOKMARK_MARKER);
 	else
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERADD, line, BOOKMARK_MARKER);
+		ScintillaBridge_sendMessage(sci, SCI_MARKERADD, line, BOOKMARK_MARKER);
 }
 
 static void nextBookmark()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	intptr_t curLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, pos, 0);
+	intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	intptr_t curLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, pos, 0);
 
-	intptr_t nextLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERNEXT, curLine + 1, BOOKMARK_MASK);
+	intptr_t nextLine = ScintillaBridge_sendMessage(sci, SCI_MARKERNEXT, curLine + 1, BOOKMARK_MASK);
 	if (nextLine < 0)
 	{
 		// Wrap around
-		nextLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERNEXT, 0, BOOKMARK_MASK);
+		nextLine = ScintillaBridge_sendMessage(sci, SCI_MARKERNEXT, 0, BOOKMARK_MASK);
 	}
 
 	if (nextLine >= 0)
 	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_GOTOLINE, nextLine, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_GOTOLINE, nextLine, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SCROLLCARET, 0, 0);
 	}
 }
 
 static void prevBookmark()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	intptr_t curLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, pos, 0);
+	intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	intptr_t curLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, pos, 0);
 
-	intptr_t prevLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERPREVIOUS, curLine - 1, BOOKMARK_MASK);
+	intptr_t prevLine = ScintillaBridge_sendMessage(sci, SCI_MARKERPREVIOUS, curLine - 1, BOOKMARK_MASK);
 	if (prevLine < 0)
 	{
 		// Wrap around from end
-		intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
-		prevLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERPREVIOUS, lineCount - 1, BOOKMARK_MASK);
+		intptr_t lineCount = ScintillaBridge_sendMessage(sci, SCI_GETLINECOUNT, 0, 0);
+		prevLine = ScintillaBridge_sendMessage(sci, SCI_MARKERPREVIOUS, lineCount - 1, BOOKMARK_MASK);
 	}
 
 	if (prevLine >= 0)
 	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_GOTOLINE, prevLine, 0);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SCROLLCARET, 0, 0);
+		ScintillaBridge_sendMessage(sci, SCI_GOTOLINE, prevLine, 0);
+		ScintillaBridge_sendMessage(sci, SCI_SCROLLCARET, 0, 0);
 	}
 }
 
 static void clearAllBookmarks()
 {
-	if (!g_scintillaView) return;
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERDELETEALL, BOOKMARK_MARKER, 0);
+	void* sci = activeScintillaView();
+	if (!sci) return;
+	ScintillaBridge_sendMessage(sci, SCI_MARKERDELETEALL, BOOKMARK_MARKER, 0);
 }
 
 // ============================================================
@@ -1595,10 +1662,11 @@ static void clearAllBookmarks()
 
 static void showAutoComplete()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t pos = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCURRENTPOS, 0, 0);
-	intptr_t wordStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_WORDSTARTPOSITION, pos, 1);
+	intptr_t pos = ScintillaBridge_sendMessage(sci, SCI_GETCURRENTPOS, 0, 0);
+	intptr_t wordStart = ScintillaBridge_sendMessage(sci, SCI_WORDSTARTPOSITION, pos, 1);
 	intptr_t wordLen = pos - wordStart;
 
 	if (wordLen < 1) return;
@@ -1606,16 +1674,16 @@ static void showAutoComplete()
 	// Get the partial word
 	char partial[256] = {};
 	for (intptr_t i = 0; i < wordLen && i < 255; ++i)
-		partial[i] = static_cast<char>(ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCHARAT, wordStart + i, 0));
+		partial[i] = static_cast<char>(ScintillaBridge_sendMessage(sci, SCI_GETCHARAT, wordStart + i, 0));
 	partial[wordLen] = '\0';
 
 	// Collect all words in the document that match the prefix
-	intptr_t docLen = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLENGTH, 0, 0);
+	intptr_t docLen = ScintillaBridge_sendMessage(sci, SCI_GETLENGTH, 0, 0);
 	if (docLen <= 0) return;
 
 	std::string docText;
 	docText.resize(docLen + 1);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTEXT, docLen + 1, (intptr_t)docText.data());
+	ScintillaBridge_sendMessage(sci, SCI_GETTEXT, docLen + 1, (intptr_t)docText.data());
 
 	// Extract unique words
 	std::set<std::string> words;
@@ -1664,9 +1732,9 @@ static void showAutoComplete()
 		wordList += matches[i];
 	}
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_AUTOCSETIGNORECASE, 1, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_AUTOCSETORDER, 1, 0); // SC_ORDER_PERFORMSORT
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_AUTOCSHOW, wordLen, (intptr_t)wordList.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_AUTOCSETIGNORECASE, 1, 0);
+	ScintillaBridge_sendMessage(sci, SCI_AUTOCSETORDER, 1, 0); // SC_ORDER_PERFORMSORT
+	ScintillaBridge_sendMessage(sci, SCI_AUTOCSHOW, wordLen, (intptr_t)wordList.c_str());
 }
 
 // ============================================================
@@ -1829,20 +1897,26 @@ static void showPreferencesDlg()
 			g_fontSize = sizePopup.titleOfSelectedItem.intValue;
 			g_tabWidth = tabPopup.titleOfSelectedItem.intValue;
 
-			if (g_scintillaView)
+			// Apply to both views (global setting)
+			void* views[] = { g_scintillaView, g_scintillaView2 };
+			for (void* sci : views)
 			{
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFONT, 32, (intptr_t)g_fontName.c_str());
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETSIZE, 32, g_fontSize);
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLECLEARALL, 0, 0);
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTABWIDTH, g_tabWidth, 0);
-
-				// Reapply appearance (colors)
-				applyAppearance();
-
-				// Reapply language keywords/highlighting
-				if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
-					applyLanguage(g_documents[g_activeTab].languageIndex);
+				if (!sci) continue;
+				ScintillaBridge_sendMessage(sci, SCI_STYLESETFONT, 32, (intptr_t)g_fontName.c_str());
+				ScintillaBridge_sendMessage(sci, SCI_STYLESETSIZE, 32, g_fontSize);
+				ScintillaBridge_sendMessage(sci, SCI_STYLECLEARALL, 0, 0);
+				ScintillaBridge_sendMessage(sci, SCI_SETTABWIDTH, g_tabWidth, 0);
 			}
+
+			// Reapply appearance (colors) — handles both views
+			applyAppearance();
+
+			// Reapply language keywords/highlighting for both views
+			if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+				applyLanguageToView(g_scintillaView, g_documents[g_activeTab].languageIndex);
+			if (g_isSplit && g_scintillaView2 && g_activeTab2 >= 0 &&
+			    g_activeTab2 < static_cast<int>(g_documents2.size()))
+				applyLanguageToView(g_scintillaView2, g_documents2[g_activeTab2].languageIndex);
 
 			// Save settings immediately
 			auto& ss = SettingsManager::instance().settings;
@@ -2036,12 +2110,14 @@ static bool openFileAtPath(NSString* path)
 	int langIdx = guessLanguage(wpath);
 	int tabIdx = addNewTab(title, utf8Content, wpath, langIdx);
 
-	if (tabIdx >= 0 && tabIdx < static_cast<int>(g_documents.size()))
+	auto& docs = activeDocuments();
+	if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
 	{
-		g_documents[tabIdx].encoding = enc;
-		g_documents[tabIdx].eolMode = eol;
-		if (g_scintillaView)
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETEOLMODE, eol, 0);
+		docs[tabIdx].encoding = enc;
+		docs[tabIdx].eolMode = eol;
+		void* sci = activeScintillaView();
+		if (sci)
+			ScintillaBridge_sendMessage(sci, SCI_SETEOLMODE, eol, 0);
 	}
 
 	if (g_fileMonitor)
@@ -2096,10 +2172,14 @@ static void openRecentFile(int index)
 
 static void saveCurrentFile()
 {
-	if (g_activeTab < 0 || g_activeTab >= static_cast<int>(g_documents.size()))
+	auto& docs = activeDocuments();
+	int tabIdx = activeTabIndex();
+	if (tabIdx < 0 || tabIdx >= static_cast<int>(docs.size()))
 		return;
 
-	auto& doc = g_documents[g_activeTab];
+	auto& doc = docs[tabIdx];
+	void* sci = activeScintillaView();
+	HWND tabHwnd = activeTabHwnd();
 
 	if (doc.filePath.empty())
 	{
@@ -2124,26 +2204,30 @@ static void saveCurrentFile()
 			doc.title = doc.title.substr(lastSlash + 1);
 
 		// Update tab title
-		TCITEMW tcItem = {};
-		tcItem.mask = TCIF_TEXT;
-		wchar_t titleBuf[256];
-		wcsncpy(titleBuf, doc.title.c_str(), 255);
-		titleBuf[255] = L'\0';
-		tcItem.pszText = titleBuf;
-		SendMessageW(g_tabHwnd, TCM_SETITEMW, g_activeTab, reinterpret_cast<LPARAM>(&tcItem));
+		if (tabHwnd)
+		{
+			TCITEMW tcItem = {};
+			tcItem.mask = TCIF_TEXT;
+			wchar_t titleBuf[256];
+			wcsncpy(titleBuf, doc.title.c_str(), 255);
+			titleBuf[255] = L'\0';
+			tcItem.pszText = titleBuf;
+			SendMessageW(tabHwnd, TCM_SETITEMW, tabIdx, reinterpret_cast<LPARAM>(&tcItem));
+		}
 
 		// Detect language from extension
 		doc.languageIndex = guessLanguage(doc.filePath);
-		applyLanguage(doc.languageIndex);
+		if (sci)
+			applyLanguageToView(sci, doc.languageIndex);
 	}
 
-	if (!g_scintillaView) return;
+	if (!sci) return;
 
-	intptr_t len = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTEXTLENGTH, 0, 0);
+	intptr_t len = ScintillaBridge_sendMessage(sci, SCI_GETTEXTLENGTH, 0, 0);
 	if (len >= 0)
 	{
 		char* buf = new char[len + 1];
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_GETTEXT, len + 1, (intptr_t)buf);
+		ScintillaBridge_sendMessage(sci, SCI_GETTEXT, len + 1, (intptr_t)buf);
 
 		NSString* path = WideToNSString(doc.filePath.c_str());
 		NSData* encoded = encodeForSave(buf, len, doc.encoding);
@@ -2155,7 +2239,7 @@ static void saveCurrentFile()
 			NSLog(@"Error saving file");
 		else
 		{
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSAVEPOINT, 0, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETSAVEPOINT, 0, 0);
 			NSString* nsTitle = WideToNSString(doc.title.c_str());
 			[g_mainWindow setTitle:[NSString stringWithFormat:@"Notepad++ — %@", nsTitle]];
 
@@ -2171,37 +2255,42 @@ static void saveCurrentFile()
 // Language switching
 // ============================================================
 
-static void applyLanguage(int langIndex)
+static void applyLanguageToView(void* sci, int langIndex)
 {
-	if (!g_scintillaView) return;
+	if (!sci) return;
 	if (langIndex < 0 || langIndex >= g_numLanguages) return;
 
 	const auto& lang = g_languages[langIndex];
 
 	// Create lexer via Lexilla and send to Scintilla
 	ILexer5* lexer = CreateLexer(lang.lexerName);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETILEXER, 0, (intptr_t)lexer);
+	ScintillaBridge_sendMessage(sci, SCI_SETILEXER, 0, (intptr_t)lexer);
 
 	// Set keyword lists
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETKEYWORDS, 0, (intptr_t)lang.keywords);
+	ScintillaBridge_sendMessage(sci, SCI_SETKEYWORDS, 0, (intptr_t)lang.keywords);
 	if (lang.keywords2 && lang.keywords2[0])
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_SETKEYWORDS, 1, (intptr_t)lang.keywords2);
+		ScintillaBridge_sendMessage(sci, SCI_SETKEYWORDS, 1, (intptr_t)lang.keywords2);
 
 	// Set fold properties
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETPROPERTY, (uintptr_t)"fold", (intptr_t)"1");
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETPROPERTY, (uintptr_t)"fold.compact", (intptr_t)"0");
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETPROPERTY, (uintptr_t)"fold.comment", (intptr_t)"1");
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETPROPERTY, (uintptr_t)"fold.preprocessor", (intptr_t)"1");
+	ScintillaBridge_sendMessage(sci, SCI_SETPROPERTY, (uintptr_t)"fold", (intptr_t)"1");
+	ScintillaBridge_sendMessage(sci, SCI_SETPROPERTY, (uintptr_t)"fold.compact", (intptr_t)"0");
+	ScintillaBridge_sendMessage(sci, SCI_SETPROPERTY, (uintptr_t)"fold.comment", (intptr_t)"1");
+	ScintillaBridge_sendMessage(sci, SCI_SETPROPERTY, (uintptr_t)"fold.preprocessor", (intptr_t)"1");
 
 	// Set font on STYLE_DEFAULT
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFONT, 32, (intptr_t)g_fontName.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETSIZE, 32, g_fontSize);
+	ScintillaBridge_sendMessage(sci, SCI_STYLESETFONT, 32, (intptr_t)g_fontName.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_STYLESETSIZE, 32, g_fontSize);
 
 	// Apply syntax-aware colors
 	applyAppearance();
 
 	// Trigger re-coloring
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_COLOURISE, 0, -1);
+	ScintillaBridge_sendMessage(sci, SCI_COLOURISE, 0, -1);
+}
+
+static void applyLanguage(int langIndex)
+{
+	applyLanguageToView(activeScintillaView(), langIndex);
 }
 
 // ============================================================
@@ -2210,14 +2299,15 @@ static void applyLanguage(int langIndex)
 
 static void doTitleCase()
 {
-	if (!g_scintillaView) return;
-	intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-	intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
+	void* sci = activeScintillaView();
+	if (!sci) return;
+	intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+	intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
 	if (selStart == selEnd) return;
 
 	intptr_t len = selEnd - selStart;
 	std::string text(len + 1, '\0');
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELTEXT, 0, (intptr_t)text.data());
+	ScintillaBridge_sendMessage(sci, SCI_GETSELTEXT, 0, (intptr_t)text.data());
 	text.resize(len);
 
 	bool capitalize = true;
@@ -2234,68 +2324,72 @@ static void doTitleCase()
 			text[i] = tolower(static_cast<unsigned char>(text[i]));
 	}
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_BEGINUNDOACTION, 0, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET, -1, 0); // dummy
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, selStart, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, selEnd, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET, len, (intptr_t)text.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, selStart, selStart + (intptr_t)text.size());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_ENDUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_BEGINUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, selStart, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, selEnd, 0);
+	ScintillaBridge_sendMessage(sci, SCI_REPLACETARGET, len, (intptr_t)text.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_SETSEL, selStart, selStart + (intptr_t)text.size());
+	ScintillaBridge_sendMessage(sci, SCI_ENDUNDOACTION, 0, 0);
 }
 
 static void doTrimTrailingWhitespace()
 {
-	if (!g_scintillaView) return;
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_BEGINUNDOACTION, 0, 0);
+	void* sci = activeScintillaView();
+	if (!sci) return;
+	ScintillaBridge_sendMessage(sci, SCI_BEGINUNDOACTION, 0, 0);
 
-	intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
+	intptr_t lineCount = ScintillaBridge_sendMessage(sci, SCI_GETLINECOUNT, 0, 0);
 	for (intptr_t line = lineCount - 1; line >= 0; --line)
 	{
-		intptr_t lineEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINEENDPOSITION, line, 0);
-		intptr_t lineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line, 0);
+		intptr_t lineEnd = ScintillaBridge_sendMessage(sci, SCI_GETLINEENDPOSITION, line, 0);
+		intptr_t lineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line, 0);
 		intptr_t trimPos = lineEnd;
 		while (trimPos > lineStart)
 		{
-			char ch = (char)ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCHARAT, trimPos - 1, 0);
+			char ch = (char)ScintillaBridge_sendMessage(sci, SCI_GETCHARAT, trimPos - 1, 0);
 			if (ch != ' ' && ch != '\t') break;
 			--trimPos;
 		}
 		if (trimPos < lineEnd)
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_DELETERANGE, trimPos, lineEnd - trimPos);
+			ScintillaBridge_sendMessage(sci, SCI_DELETERANGE, trimPos, lineEnd - trimPos);
 	}
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_ENDUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_ENDUNDOACTION, 0, 0);
 }
 
 static void doRemoveEmptyLines()
 {
-	if (!g_scintillaView) return;
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_BEGINUNDOACTION, 0, 0);
+	void* sci = activeScintillaView();
+	if (!sci) return;
+	ScintillaBridge_sendMessage(sci, SCI_BEGINUNDOACTION, 0, 0);
 
-	intptr_t lineCount = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINECOUNT, 0, 0);
+	intptr_t lineCount = ScintillaBridge_sendMessage(sci, SCI_GETLINECOUNT, 0, 0);
 	for (intptr_t line = lineCount - 1; line >= 0; --line)
 	{
-		intptr_t lineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line, 0);
-		intptr_t lineEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINEENDPOSITION, line, 0);
+		intptr_t lineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line, 0);
+		intptr_t lineEnd = ScintillaBridge_sendMessage(sci, SCI_GETLINEENDPOSITION, line, 0);
 		if (lineStart == lineEnd)
 		{
 			// Delete the line including its EOL
-			intptr_t nextLineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line + 1, 0);
+			intptr_t nextLineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line + 1, 0);
 			if (nextLineStart > lineStart)
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_DELETERANGE, lineStart, nextLineStart - lineStart);
+				ScintillaBridge_sendMessage(sci, SCI_DELETERANGE, lineStart, nextLineStart - lineStart);
 		}
 	}
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_ENDUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_ENDUNDOACTION, 0, 0);
 }
 
 static void doToggleLineComment()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
 	// Determine comment prefix from language
 	const char* prefix = "//";
-	if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+	auto& docs = activeDocuments();
+	int tabIdx = activeTabIndex();
+	if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
 	{
-		int langIdx = g_documents[g_activeTab].languageIndex;
+		int langIdx = docs[tabIdx].languageIndex;
 		if (langIdx >= 0 && langIdx < g_numLanguages)
 		{
 			const char* lexer = g_languages[langIdx].lexerName;
@@ -2306,11 +2400,11 @@ static void doToggleLineComment()
 		}
 	}
 
-	intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-	intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
-	intptr_t startLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, selStart, 0);
-	intptr_t endLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, selEnd, 0);
-	if (selEnd == ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, endLine, 0) && endLine > startLine)
+	intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+	intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
+	intptr_t startLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, selStart, 0);
+	intptr_t endLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, selEnd, 0);
+	if (selEnd == ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, endLine, 0) && endLine > startLine)
 		--endLine;
 
 	size_t prefixLen = strlen(prefix);
@@ -2319,8 +2413,8 @@ static void doToggleLineComment()
 	bool allCommented = true;
 	for (intptr_t line = startLine; line <= endLine; ++line)
 	{
-		intptr_t lineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line, 0);
-		intptr_t lineEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINEENDPOSITION, line, 0);
+		intptr_t lineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line, 0);
+		intptr_t lineEnd = ScintillaBridge_sendMessage(sci, SCI_GETLINEENDPOSITION, line, 0);
 		if (lineEnd - lineStart < (intptr_t)prefixLen)
 		{
 			allCommented = false;
@@ -2329,7 +2423,7 @@ static void doToggleLineComment()
 		bool match = true;
 		for (size_t j = 0; j < prefixLen; ++j)
 		{
-			if ((char)ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCHARAT, lineStart + j, 0) != prefix[j])
+			if ((char)ScintillaBridge_sendMessage(sci, SCI_GETCHARAT, lineStart + j, 0) != prefix[j])
 			{
 				match = false;
 				break;
@@ -2338,14 +2432,14 @@ static void doToggleLineComment()
 		if (!match) { allCommented = false; break; }
 	}
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_BEGINUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_BEGINUNDOACTION, 0, 0);
 	if (allCommented)
 	{
 		// Remove comment prefix
 		for (intptr_t line = endLine; line >= startLine; --line)
 		{
-			intptr_t lineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_DELETERANGE, lineStart, prefixLen);
+			intptr_t lineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line, 0);
+			ScintillaBridge_sendMessage(sci, SCI_DELETERANGE, lineStart, prefixLen);
 		}
 	}
 	else
@@ -2353,35 +2447,36 @@ static void doToggleLineComment()
 		// Add comment prefix
 		for (intptr_t line = endLine; line >= startLine; --line)
 		{
-			intptr_t lineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, lineStart, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, lineStart, 0);
-			ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET, prefixLen, (intptr_t)prefix);
+			intptr_t lineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, lineStart, 0);
+			ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, lineStart, 0);
+			ScintillaBridge_sendMessage(sci, SCI_REPLACETARGET, prefixLen, (intptr_t)prefix);
 		}
 	}
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_ENDUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_ENDUNDOACTION, 0, 0);
 }
 
 static void doSortLines(bool ascending)
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-	intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
+	intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+	intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
 	if (selStart == selEnd) return;
 
-	intptr_t startLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, selStart, 0);
-	intptr_t endLine = ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEFROMPOSITION, selEnd, 0);
+	intptr_t startLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, selStart, 0);
+	intptr_t endLine = ScintillaBridge_sendMessage(sci, SCI_LINEFROMPOSITION, selEnd, 0);
 
 	std::vector<std::string> lines;
 	for (intptr_t line = startLine; line <= endLine; ++line)
 	{
-		intptr_t lineStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, line, 0);
-		intptr_t lineEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINEENDPOSITION, line, 0);
+		intptr_t lineStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, line, 0);
+		intptr_t lineEnd = ScintillaBridge_sendMessage(sci, SCI_GETLINEENDPOSITION, line, 0);
 		intptr_t len = lineEnd - lineStart;
 		std::string text(len, '\0');
 		for (intptr_t i = 0; i < len; ++i)
-			text[i] = (char)ScintillaBridge_sendMessage(g_scintillaView, SCI_GETCHARAT, lineStart + i, 0);
+			text[i] = (char)ScintillaBridge_sendMessage(sci, SCI_GETCHARAT, lineStart + i, 0);
 		lines.push_back(text);
 	}
 
@@ -2397,27 +2492,28 @@ static void doSortLines(bool ascending)
 		if (i + 1 < lines.size()) result += '\n';
 	}
 
-	intptr_t replStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_POSITIONFROMLINE, startLine, 0);
-	intptr_t replEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETLINEENDPOSITION, endLine, 0);
+	intptr_t replStart = ScintillaBridge_sendMessage(sci, SCI_POSITIONFROMLINE, startLine, 0);
+	intptr_t replEnd = ScintillaBridge_sendMessage(sci, SCI_GETLINEENDPOSITION, endLine, 0);
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_BEGINUNDOACTION, 0, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, replStart, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, replEnd, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET, result.size(), (intptr_t)result.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_ENDUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_BEGINUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, replStart, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, replEnd, 0);
+	ScintillaBridge_sendMessage(sci, SCI_REPLACETARGET, result.size(), (intptr_t)result.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_ENDUNDOACTION, 0, 0);
 }
 
 static void doJoinLines()
 {
-	if (!g_scintillaView) return;
+	void* sci = activeScintillaView();
+	if (!sci) return;
 
-	intptr_t selStart = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONSTART, 0, 0);
-	intptr_t selEnd = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELECTIONEND, 0, 0);
+	intptr_t selStart = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONSTART, 0, 0);
+	intptr_t selEnd = ScintillaBridge_sendMessage(sci, SCI_GETSELECTIONEND, 0, 0);
 	if (selStart == selEnd) return;
 
 	intptr_t len = selEnd - selStart;
 	std::string text(len + 1, '\0');
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_GETSELTEXT, 0, (intptr_t)text.data());
+	ScintillaBridge_sendMessage(sci, SCI_GETSELTEXT, 0, (intptr_t)text.data());
 	text.resize(len);
 
 	// Replace all line breaks with space
@@ -2436,12 +2532,12 @@ static void doJoinLines()
 			result += text[i];
 	}
 
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_BEGINUNDOACTION, 0, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETSTART, selStart, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETTARGETEND, selEnd, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_REPLACETARGET, result.size(), (intptr_t)result.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, selStart, selStart + (intptr_t)result.size());
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_ENDUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_BEGINUNDOACTION, 0, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETSTART, selStart, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETTARGETEND, selEnd, 0);
+	ScintillaBridge_sendMessage(sci, SCI_REPLACETARGET, result.size(), (intptr_t)result.c_str());
+	ScintillaBridge_sendMessage(sci, SCI_SETSEL, selStart, selStart + (intptr_t)result.size());
+	ScintillaBridge_sendMessage(sci, SCI_ENDUNDOACTION, 0, 0);
 }
 
 // ============================================================
@@ -2460,9 +2556,13 @@ static void saveSession()
 	[[NSFileManager defaultManager] createDirectoryAtPath:dir
 	                          withIntermediateDirectories:YES attributes:nil error:nil];
 
-	NSMutableArray* tabs = [NSMutableArray array];
-	// Save state of current editor first
+	// Save state of both editors
 	saveScintillaState();
+	if (g_isSplit && g_scintillaView2)
+		saveViewState(g_scintillaView2, g_documents2, g_activeTab2);
+
+	// Save tabs for view 0
+	NSMutableArray* tabs = [NSMutableArray array];
 	for (const auto& doc : g_documents)
 	{
 		if (doc.filePath.empty()) continue;
@@ -2478,27 +2578,31 @@ static void saveSession()
 		}];
 	}
 
+	// Save tabs for view 1
 	NSMutableArray* tabs2 = [NSMutableArray array];
-	for (const auto& doc : g_documents2)
+	if (g_isSplit)
 	{
-		if (doc.filePath.empty()) continue;
-		NSString* fp = WideToNSString(doc.filePath.c_str());
-		[tabs2 addObject:@{
-			@"filePath": fp,
-			@"cursorPos": @((long long)doc.cursorPos),
-			@"anchorPos": @((long long)doc.anchorPos),
-			@"firstVisibleLine": @((long long)doc.firstVisibleLine),
-			@"languageIndex": @(doc.languageIndex),
-			@"encoding": @(doc.encoding),
-			@"eolMode": @(doc.eolMode),
-		}];
+		for (const auto& doc : g_documents2)
+		{
+			if (doc.filePath.empty()) continue;
+			NSString* fp = WideToNSString(doc.filePath.c_str());
+			[tabs2 addObject:@{
+				@"filePath": fp,
+				@"cursorPos": @((long long)doc.cursorPos),
+				@"anchorPos": @((long long)doc.anchorPos),
+				@"firstVisibleLine": @((long long)doc.firstVisibleLine),
+				@"languageIndex": @(doc.languageIndex),
+				@"encoding": @(doc.encoding),
+				@"eolMode": @(doc.eolMode),
+			}];
+		}
 	}
 
 	NSDictionary* session = @{
 		@"version": @1,
 		@"tabs": tabs,
-		@"activeTab": @(g_activeTab),
 		@"tabs2": tabs2,
+		@"activeTab": @(g_activeTab),
 		@"activeTab2": @(g_activeTab2),
 		@"isSplit": @(g_isSplit),
 	};
@@ -2511,6 +2615,8 @@ static void saveSession()
 		[data writeToFile:path atomically:YES];
 	}
 }
+
+static void doSplit(); // forward declaration for session restore
 
 static void restoreSession()
 {
@@ -2555,17 +2661,72 @@ static void restoreSession()
 	{
 		// Remove the welcome tab if it was the first one
 		if (g_documents.size() > 1 && g_documents[0].filePath.empty() && g_documents[0].title == L"Welcome")
-			closeTab(0);
+			closeTabFromView(0, 0);
 
 		// Restore active tab
 		int savedActive = [session[@"activeTab"] intValue];
 		if (savedActive >= 0 && savedActive < static_cast<int>(g_documents.size()))
 		{
-			switchToTab(savedActive);
+			switchToTabInView(0, savedActive);
 			// Restore cursor/scroll position
 			const auto& doc = g_documents[savedActive];
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETFIRSTVISIBLELINE, doc.firstVisibleLine, 0);
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_SETSEL, doc.anchorPos, doc.cursorPos);
+		}
+
+		// Restore split view if session had one
+		bool wasSplit = [session[@"isSplit"] boolValue];
+		NSArray* tabs2 = session[@"tabs2"];
+		if (wasSplit && [tabs2 isKindOfClass:[NSArray class]] && tabs2.count > 0)
+		{
+			doSplit(); // creates right pane with a cloned tab
+			if (g_isSplit && g_scintillaView2)
+			{
+				// Clear the default cloned document and populate from session
+				g_documents2.clear();
+				while (SendMessageW(g_tabHwnd2, TCM_GETITEMCOUNT, 0, 0) > 0)
+					SendMessageW(g_tabHwnd2, TCM_DELETEITEM, 0, 0);
+
+				g_activeView = 1;
+				for (NSDictionary* tab in tabs2)
+				{
+					NSString* fp = tab[@"filePath"];
+					if (!fp || ![[NSFileManager defaultManager] fileExistsAtPath:fp]) continue;
+					openFileAtPath(fp);
+					int idx = static_cast<int>(g_documents2.size()) - 1;
+					if (idx >= 0)
+					{
+						if (tab[@"cursorPos"])
+							g_documents2[idx].cursorPos = [tab[@"cursorPos"] longLongValue];
+						if (tab[@"anchorPos"])
+							g_documents2[idx].anchorPos = [tab[@"anchorPos"] longLongValue];
+						if (tab[@"firstVisibleLine"])
+							g_documents2[idx].firstVisibleLine = [tab[@"firstVisibleLine"] longLongValue];
+						if (tab[@"languageIndex"])
+							g_documents2[idx].languageIndex = [tab[@"languageIndex"] intValue];
+						if (tab[@"encoding"])
+							g_documents2[idx].encoding = [tab[@"encoding"] intValue];
+						if (tab[@"eolMode"])
+							g_documents2[idx].eolMode = [tab[@"eolMode"] intValue];
+					}
+				}
+
+				int savedActive2 = [session[@"activeTab2"] intValue];
+				if (savedActive2 >= 0 && savedActive2 < static_cast<int>(g_documents2.size()))
+				{
+					switchToTabInView(1, savedActive2);
+					const auto& doc2 = g_documents2[savedActive2];
+					ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETFIRSTVISIBLELINE, doc2.firstVisibleLine, 0);
+					ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETSEL, doc2.anchorPos, doc2.cursorPos);
+				}
+
+				g_activeView = 0;
+			}
+		}
+		else if (wasSplit && g_documents.size() > 0)
+		{
+			// Fallback: old session format without tabs2
+			doSplit();
 		}
 	}
 }
@@ -2575,6 +2736,45 @@ static void restoreSession()
 // ============================================================
 
 static void configureScintilla(void* sci); // forward
+
+static void layoutSplitTopTabBars()
+{
+	if (!g_mainWindow || !g_tabHwnd)
+		return;
+
+	NSView* contentView = g_mainWindow.contentView;
+	if (!contentView)
+		return;
+
+	const CGFloat tabHeight = 28;
+	const CGFloat topY = contentView.bounds.size.height - tabHeight;
+
+	auto* leftTabInfo = HandleRegistry::getWindowInfo(g_tabHwnd);
+	if (leftTabInfo && leftTabInfo->nativeView)
+	{
+		NSView* leftTabView = (__bridge NSView*)leftTabInfo->nativeView;
+		if (g_isSplit && g_editorContainer)
+		{
+			leftTabView.frame = NSMakeRect(g_editorContainer.frame.origin.x, topY,
+			                               g_editorContainer.frame.size.width, tabHeight);
+		}
+		else
+		{
+			leftTabView.frame = NSMakeRect(0, topY, contentView.bounds.size.width, tabHeight);
+		}
+	}
+
+	if (g_isSplit && g_tabHwnd2 && g_editorContainer2)
+	{
+		auto* rightTabInfo = HandleRegistry::getWindowInfo(g_tabHwnd2);
+		if (rightTabInfo && rightTabInfo->nativeView)
+		{
+			NSView* rightTabView = (__bridge NSView*)rightTabInfo->nativeView;
+			rightTabView.frame = NSMakeRect(g_editorContainer2.frame.origin.x, topY,
+			                                g_editorContainer2.frame.size.width, tabHeight);
+		}
+	}
+}
 
 static void doSplit()
 {
@@ -2600,8 +2800,26 @@ static void doSplit()
 	g_editorContainer2.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 	[g_splitView addArrangedSubview:g_editorContainer2];
 
-	// Create second Scintilla view
-	g_scintillaView2 = ScintillaBridge_createView((__bridge void*)g_editorContainer2, 0, 0, 0, 0);
+	CGFloat containerHeight = rightFrame.size.height;
+	CGFloat containerWidth = rightFrame.size.width;
+
+	// Create top tab bar for right pane
+	g_tabHwnd2 = CreateWindowExW(
+		0, L"SysTabControl32", L"",
+		WS_CHILD | WS_VISIBLE | TCS_FOCUSNEVER,
+		0, 0,
+		static_cast<int>(containerWidth), 28,
+		g_mainHwnd,
+		nullptr, nullptr, nullptr
+	);
+
+	// Create sub-container for scintillaView2 (fills right pane; tab bar stays above split view)
+	g_sciContainer2 = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, containerWidth, containerHeight)];
+	g_sciContainer2.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+	[g_editorContainer2 addSubview:g_sciContainer2];
+
+	// Create second Scintilla view inside the sub-container
+	g_scintillaView2 = ScintillaBridge_createView((__bridge void*)g_sciContainer2, 0, 0, 0, 0);
 	if (g_scintillaView2)
 	{
 		configureScintilla(g_scintillaView2);
@@ -2618,7 +2836,9 @@ static void doSplit()
 						intptr_t line; int foldLevelNow; int foldLevelPrev; int margin;
 					};
 					auto* scn = reinterpret_cast<const SciNotify*>(lParam);
-					if (scn->nmhdr.code == 2010 && scn->margin == 1 && g_scintillaView2)
+					if (scn->nmhdr.code == 2028) // SCN_FOCUSIN
+						g_activeView = 1;
+					else if (scn->nmhdr.code == 2010 && scn->margin == 1 && g_scintillaView2)
 					{
 						intptr_t line = ScintillaBridge_sendMessage(g_scintillaView2, SCI_LINEFROMPOSITION, scn->position, 0);
 						intptr_t markers = ScintillaBridge_sendMessage(g_scintillaView2, SCI_MARKERGET, line, 0);
@@ -2631,22 +2851,45 @@ static void doSplit()
 			});
 	}
 
-	// Add second tab bar (not implemented for simplicity — second view shares same tab switching)
-	// Create initial document in view 2
+	// Clone the current document into the second view's own document list
+	saveScintillaState();
 	g_documents2.clear();
-	DocumentData doc2;
-	doc2.title = L"Untitled";
-	g_documents2.push_back(doc2);
-	g_activeTab2 = 0;
-	if (g_scintillaView2)
+	int srcIdx = g_activeTab >= 0 ? g_activeTab : 0;
+	if (srcIdx >= 0 && srcIdx < static_cast<int>(g_documents.size()))
 	{
-		ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETTEXT, 0, (intptr_t)"");
-		ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETSAVEPOINT, 0, 0);
-		ScintillaBridge_sendMessage(g_scintillaView2, SCI_EMPTYUNDOBUFFER, 0, 0);
+		g_documents2.push_back(g_documents[srcIdx]);
+		g_activeTab2 = 0;
+
+		// Add tab to tab bar 2
+		if (g_tabHwnd2)
+		{
+			TCITEMW tcItem = {};
+			tcItem.mask = TCIF_TEXT;
+			wchar_t titleBuf[256];
+			wcsncpy(titleBuf, g_documents[srcIdx].title.c_str(), 255);
+			titleBuf[255] = L'\0';
+			tcItem.pszText = titleBuf;
+			SendMessageW(g_tabHwnd2, TCM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&tcItem));
+			SendMessageW(g_tabHwnd2, TCM_SETCURSEL, 0, 0);
+		}
+
+		if (g_scintillaView2)
+		{
+			restoreViewToScintilla(g_scintillaView2, g_documents2, 0);
+			applyLanguageToView(g_scintillaView2, g_documents2[0].languageIndex);
+		}
 	}
 
 	[contentView addSubview:g_splitView];
+	g_splitView.delegate = (id<NSSplitViewDelegate>)g_mainWindow.delegate;
 	g_isSplit = true;
+	layoutSplitTopTabBars();
+
+	// Resize both views to fit their containers
+	ScintillaBridge_resizeToFit(g_scintillaView);
+	if (g_scintillaView2)
+		ScintillaBridge_resizeToFit(g_scintillaView2);
+
 	applyAppearance();
 }
 
@@ -2656,12 +2899,25 @@ static void doUnsplit()
 
 	NSView* contentView = g_mainWindow.contentView;
 
+	// Save right view state
+	if (g_scintillaView2)
+		saveViewState(g_scintillaView2, g_documents2, g_activeTab2);
+
 	// Remove second scintilla
 	if (g_scintillaView2)
 	{
 		ScintillaBridge_destroyView(g_scintillaView2);
 		g_scintillaView2 = nullptr;
 	}
+
+	// Destroy tab bar 2
+	if (g_tabHwnd2)
+	{
+		DestroyWindow(g_tabHwnd2);
+		g_tabHwnd2 = nullptr;
+	}
+
+	g_sciContainer2 = nil;
 
 	// Remove editor containers from split view
 	[g_editorContainer removeFromSuperview];
@@ -2688,44 +2944,77 @@ static void doUnsplit()
 	g_activeTab2 = -1;
 	g_activeView = 0;
 	g_isSplit = false;
+	layoutSplitTopTabBars();
 }
 
 static void doMoveToOtherView()
 {
 	if (!g_isSplit || !g_scintillaView || !g_scintillaView2) return;
-	if (g_activeTab < 0 || g_activeTab >= static_cast<int>(g_documents.size())) return;
 
-	saveScintillaState();
-	DocumentData doc = g_documents[g_activeTab];
+	int srcView = g_activeView;
+	int dstView = 1 - srcView;
+	auto& srcDocs = (srcView == 0) ? g_documents : g_documents2;
+	int srcTab = (srcView == 0) ? g_activeTab : g_activeTab2;
 
-	// Add to other view
-	g_documents2.push_back(doc);
-	g_activeTab2 = static_cast<int>(g_documents2.size()) - 1;
-	ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETTEXT, 0, (intptr_t)doc.content.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETFIRSTVISIBLELINE, doc.firstVisibleLine, 0);
-	ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETSEL, doc.anchorPos, doc.cursorPos);
-	if (!doc.modified)
-		ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETSAVEPOINT, 0, 0);
+	if (srcTab < 0 || srcTab >= static_cast<int>(srcDocs.size())) return;
+	if (srcDocs.size() <= 1) return; // don't move the last tab
 
-	// Remove from current view
-	closeTab(g_activeTab);
+	// Save source view state
+	void* srcSci = (srcView == 0) ? g_scintillaView : g_scintillaView2;
+	saveViewState(srcSci, srcDocs, srcTab);
+
+	// Copy document to destination
+	DocumentData docCopy = srcDocs[srcTab];
+	addNewTabToView(dstView, docCopy.title, docCopy.content, docCopy.filePath, docCopy.languageIndex);
+
+	// Copy metadata to the newly added tab
+	auto& dstDocs = (dstView == 0) ? g_documents : g_documents2;
+	int dstIdx = static_cast<int>(dstDocs.size()) - 1;
+	if (dstIdx >= 0)
+	{
+		dstDocs[dstIdx].encoding = docCopy.encoding;
+		dstDocs[dstIdx].eolMode = docCopy.eolMode;
+		dstDocs[dstIdx].cursorPos = docCopy.cursorPos;
+		dstDocs[dstIdx].anchorPos = docCopy.anchorPos;
+		dstDocs[dstIdx].firstVisibleLine = docCopy.firstVisibleLine;
+		dstDocs[dstIdx].bookmarkedLines = docCopy.bookmarkedLines;
+	}
+
+	// Remove from source view
+	closeTabFromView(srcView, srcTab);
 }
 
 static void doCloneToOtherView()
 {
 	if (!g_isSplit || !g_scintillaView || !g_scintillaView2) return;
-	if (g_activeTab < 0 || g_activeTab >= static_cast<int>(g_documents.size())) return;
 
-	saveScintillaState();
-	DocumentData doc = g_documents[g_activeTab];
+	int srcView = g_activeView;
+	int dstView = 1 - srcView;
+	auto& srcDocs = (srcView == 0) ? g_documents : g_documents2;
+	int srcTab = (srcView == 0) ? g_activeTab : g_activeTab2;
 
-	g_documents2.push_back(doc);
-	g_activeTab2 = static_cast<int>(g_documents2.size()) - 1;
-	ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETTEXT, 0, (intptr_t)doc.content.c_str());
-	ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETFIRSTVISIBLELINE, doc.firstVisibleLine, 0);
-	ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETSEL, doc.anchorPos, doc.cursorPos);
-	if (!doc.modified)
-		ScintillaBridge_sendMessage(g_scintillaView2, SCI_SETSAVEPOINT, 0, 0);
+	if (srcTab < 0 || srcTab >= static_cast<int>(srcDocs.size())) return;
+
+	// Save source view state
+	void* srcSci = (srcView == 0) ? g_scintillaView : g_scintillaView2;
+	saveViewState(srcSci, srcDocs, srcTab);
+
+	// Copy document to destination
+	DocumentData docCopy = srcDocs[srcTab];
+	addNewTabToView(dstView, docCopy.title, docCopy.content, docCopy.filePath, docCopy.languageIndex);
+
+	// Copy metadata to the newly added tab
+	auto& dstDocs = (dstView == 0) ? g_documents : g_documents2;
+	int dstIdx = static_cast<int>(dstDocs.size()) - 1;
+	if (dstIdx >= 0)
+	{
+		dstDocs[dstIdx].encoding = docCopy.encoding;
+		dstDocs[dstIdx].eolMode = docCopy.eolMode;
+		dstDocs[dstIdx].cursorPos = docCopy.cursorPos;
+		dstDocs[dstIdx].anchorPos = docCopy.anchorPos;
+		dstDocs[dstIdx].firstVisibleLine = docCopy.firstVisibleLine;
+		dstDocs[dstIdx].bookmarkedLines = docCopy.bookmarkedLines;
+	}
 }
 
 // ============================================================
@@ -2751,8 +3040,10 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 			if (cmdId >= IDM_LANG_BASE && cmdId < IDM_LANG_BASE + g_numLanguages)
 			{
 				int langIdx = cmdId - IDM_LANG_BASE;
-				if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
-					g_documents[g_activeTab].languageIndex = langIdx;
+				auto& docs = activeDocuments();
+				int tabIdx = activeTabIndex();
+				if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
+					docs[tabIdx].languageIndex = langIdx;
 				applyLanguage(langIdx);
 				return 0;
 			}
@@ -2771,86 +3062,115 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 				case IDM_FILE_SAVEAS:
 				{
 					// Force Save As by temporarily clearing the file path
-					if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+					auto& docs = activeDocuments();
+					int tabIdx = activeTabIndex();
+					if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
 					{
-						std::wstring origPath = g_documents[g_activeTab].filePath;
-						g_documents[g_activeTab].filePath.clear();
+						std::wstring origPath = docs[tabIdx].filePath;
+						docs[tabIdx].filePath.clear();
 						saveCurrentFile();
 						// If user cancelled, restore original path
-						if (g_documents[g_activeTab].filePath.empty())
-							g_documents[g_activeTab].filePath = origPath;
+						if (docs[tabIdx].filePath.empty())
+							docs[tabIdx].filePath = origPath;
 					}
 					return 0;
 				}
 				case IDM_FILE_CLOSE:
-					closeTab(g_activeTab);
+					closeTabFromView(g_activeView, activeTabIndex());
 					return 0;
 				case IDM_FILE_CLOSEALL:
-					while (g_documents.size() > 1)
-						closeTab(static_cast<int>(g_documents.size()) - 1);
-					closeTab(0);
+				{
+					auto& closeDocs = activeDocuments();
+					while (closeDocs.size() > 1)
+						closeTabFromView(g_activeView, static_cast<int>(closeDocs.size()) - 1);
+					closeTabFromView(g_activeView, 0);
 					return 0;
+				}
 				case IDM_FILE_RECENT_CLEAR:
 					g_recentFiles.clear();
 					rebuildRecentMenu();
 					return 0;
 
 				case IDM_EDIT_UNDO:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_UNDO, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_UNDO, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_REDO:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_REDO, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_REDO, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_CUT:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_CUT, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_CUT, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_COPY:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_COPY, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_COPY, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_PASTE:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_PASTE, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_PASTE, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_SELECTALL:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_SELECTALL, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_SELECTALL, 0, 0);
 					return 0;
+				}
 
 				case IDM_VIEW_WORDWRAP:
-					if (g_scintillaView)
+				{
+					void* sci = activeScintillaView();
+					if (sci)
 					{
-						intptr_t mode = ScintillaBridge_sendMessage(g_scintillaView, SCI_GETWRAPMODE, 0, 0);
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_SETWRAPMODE, mode == 0 ? 1 : 0, 0);
+						intptr_t mode = ScintillaBridge_sendMessage(sci, SCI_GETWRAPMODE, 0, 0);
+						ScintillaBridge_sendMessage(sci, SCI_SETWRAPMODE, mode == 0 ? 1 : 0, 0);
 						HMENU hMenu = GetMenu(hWnd);
 						if (hMenu)
 							CheckMenuItem(hMenu, IDM_VIEW_WORDWRAP,
 							              MF_BYCOMMAND | (mode == 0 ? MF_CHECKED : MF_UNCHECKED));
 					}
 					return 0;
+				}
 				case IDM_VIEW_LINENUMBER:
-					if (g_scintillaView)
+				{
+					g_showLineNumbers = !g_showLineNumbers;
+					// Apply to both views (global setting)
+					void* views[] = { g_scintillaView, g_scintillaView2 };
+					for (void* sci : views)
 					{
-						g_showLineNumbers = !g_showLineNumbers;
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_SETMARGINWIDTHN, 0,
-						                           g_showLineNumbers ? 50 : 0);
-						HMENU hMenu = GetMenu(hWnd);
-						if (hMenu)
-							CheckMenuItem(hMenu, IDM_VIEW_LINENUMBER,
-							              MF_BYCOMMAND | (g_showLineNumbers ? MF_CHECKED : MF_UNCHECKED));
+						if (sci)
+							ScintillaBridge_sendMessage(sci, SCI_SETMARGINWIDTHN, 0,
+							                           g_showLineNumbers ? 50 : 0);
 					}
+					HMENU hMenu = GetMenu(hWnd);
+					if (hMenu)
+						CheckMenuItem(hMenu, IDM_VIEW_LINENUMBER,
+						              MF_BYCOMMAND | (g_showLineNumbers ? MF_CHECKED : MF_UNCHECKED));
 					return 0;
+				}
 				case IDM_VIEW_FOLDALL:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_FOLDALL, SC_FOLDACTION_CONTRACT, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_FOLDALL, SC_FOLDACTION_CONTRACT, 0);
 					return 0;
+				}
 				case IDM_VIEW_UNFOLDALL:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_FOLDALL, SC_FOLDACTION_EXPAND, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_FOLDALL, SC_FOLDACTION_EXPAND, 0);
 					return 0;
+				}
 				case IDM_VIEW_PREFERENCES:
 					showPreferencesDlg();
 					return 0;
@@ -2896,32 +3216,44 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
 				// Phase 7 — Edit commands
 				case IDM_EDIT_UPPERCASE:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_UPPERCASE, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_UPPERCASE, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_LOWERCASE:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_LOWERCASE, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_LOWERCASE, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_TITLECASE:
 					doTitleCase();
 					return 0;
 				case IDM_EDIT_DUP_LINE:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEDUPLICATE, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_LINEDUPLICATE, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_DEL_LINE:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_LINEDELETE, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_LINEDELETE, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_MOVEUP:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_MOVESELECTEDLINESUP, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_MOVESELECTEDLINESUP, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_MOVEDOWN:
-					if (g_scintillaView)
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_MOVESELECTEDLINESDOWN, 0, 0);
+				{
+					void* sci = activeScintillaView();
+					if (sci) ScintillaBridge_sendMessage(sci, SCI_MOVESELECTEDLINESDOWN, 0, 0);
 					return 0;
+				}
 				case IDM_EDIT_TRIMTRAILING:
 					doTrimTrailingWhitespace();
 					return 0;
@@ -2957,32 +3289,24 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
 				// Phase 7 — EOL conversion
 				case IDM_FORMAT_EOL_LF:
-					if (g_scintillaView && g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
-					{
-						g_documents[g_activeTab].eolMode = SC_EOL_LF;
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_SETEOLMODE, SC_EOL_LF, 0);
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_CONVERTEOLS, SC_EOL_LF, 0);
-						updateStatusBar();
-					}
-					return 0;
 				case IDM_FORMAT_EOL_CRLF:
-					if (g_scintillaView && g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
-					{
-						g_documents[g_activeTab].eolMode = SC_EOL_CRLF;
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_SETEOLMODE, SC_EOL_CRLF, 0);
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_CONVERTEOLS, SC_EOL_CRLF, 0);
-						updateStatusBar();
-					}
-					return 0;
 				case IDM_FORMAT_EOL_CR:
-					if (g_scintillaView && g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+				{
+					void* sci = activeScintillaView();
+					auto& docs = activeDocuments();
+					int tabIdx = activeTabIndex();
+					if (sci && tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
 					{
-						g_documents[g_activeTab].eolMode = SC_EOL_CR;
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_SETEOLMODE, SC_EOL_CR, 0);
-						ScintillaBridge_sendMessage(g_scintillaView, SCI_CONVERTEOLS, SC_EOL_CR, 0);
+						int eol = SC_EOL_LF;
+						if (cmdId == IDM_FORMAT_EOL_CRLF) eol = SC_EOL_CRLF;
+						if (cmdId == IDM_FORMAT_EOL_CR)   eol = SC_EOL_CR;
+						docs[tabIdx].eolMode = eol;
+						ScintillaBridge_sendMessage(sci, SCI_SETEOLMODE, eol, 0);
+						ScintillaBridge_sendMessage(sci, SCI_CONVERTEOLS, eol, 0);
 						updateStatusBar();
 					}
 					return 0;
+				}
 
 				// Phase 7 — Encoding change
 				case IDM_FORMAT_ENC_UTF8:
@@ -2990,17 +3314,21 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 				case IDM_FORMAT_ENC_UTF16LE:
 				case IDM_FORMAT_ENC_UTF16BE:
 				case IDM_FORMAT_ENC_ANSI:
-					if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
+				{
+					auto& docs = activeDocuments();
+					int tabIdx = activeTabIndex();
+					if (tabIdx >= 0 && tabIdx < static_cast<int>(docs.size()))
 					{
 						int newEnc = ENC_UTF8;
 						if (cmdId == IDM_FORMAT_ENC_UTF8BOM)  newEnc = ENC_UTF8_BOM;
 						if (cmdId == IDM_FORMAT_ENC_UTF16LE)  newEnc = ENC_UTF16_LE;
 						if (cmdId == IDM_FORMAT_ENC_UTF16BE)  newEnc = ENC_UTF16_BE;
 						if (cmdId == IDM_FORMAT_ENC_ANSI)     newEnc = ENC_ANSI;
-						g_documents[g_activeTab].encoding = newEnc;
+						docs[tabIdx].encoding = newEnc;
 						updateStatusBar();
 					}
 					return 0;
+				}
 			}
 			break;
 		}
@@ -3010,9 +3338,18 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 			NMHDR* pNmhdr = reinterpret_cast<NMHDR*>(lParam);
 			if (pNmhdr && pNmhdr->code == TCN_SELCHANGE)
 			{
-				int newSel = static_cast<int>(SendMessageW(g_tabHwnd, TCM_GETCURSEL, 0, 0));
-				if (newSel != g_activeTab && newSel >= 0)
-					switchToTab(newSel);
+				if (pNmhdr->hwndFrom == g_tabHwnd)
+				{
+					int newSel = static_cast<int>(SendMessageW(g_tabHwnd, TCM_GETCURSEL, 0, 0));
+					if (newSel != g_activeTab && newSel >= 0)
+						switchToTabInView(0, newSel);
+				}
+				else if (pNmhdr->hwndFrom == g_tabHwnd2)
+				{
+					int newSel = static_cast<int>(SendMessageW(g_tabHwnd2, TCM_GETCURSEL, 0, 0));
+					if (newSel != g_activeTab2 && newSel >= 0)
+						switchToTabInView(1, newSel);
+				}
 				return 0;
 			}
 			break;
@@ -3029,6 +3366,8 @@ static LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		case WM_SIZE:
 			if (g_scintillaView)
 				ScintillaBridge_resizeToFit(g_scintillaView);
+			if (g_isSplit && g_scintillaView2)
+				ScintillaBridge_resizeToFit(g_scintillaView2);
 			return 0;
 
 		case WM_CLOSE:
@@ -3226,16 +3565,60 @@ static void configureScintilla(void* sci)
 // Dark mode support
 // ============================================================
 
-static void applyFoldMarkerColors(bool isDark)
+static void applyFoldMarkerColorsToView(void* sci, bool isDark)
 {
-	if (!g_scintillaView) return;
+	if (!sci) return;
 	int fgColor = isDark ? 0xD4D4D4 : 0x808080;
 	int bgColor = isDark ? 0x2D2D2D : 0xF0F0F0;
 	for (int m = SC_MARKNUM_FOLDEREND; m <= SC_MARKNUM_FOLDEROPEN; ++m)
 	{
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERSETFORE, m, fgColor);
-		ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERSETBACK, m, bgColor);
+		ScintillaBridge_sendMessage(sci, SCI_MARKERSETFORE, m, fgColor);
+		ScintillaBridge_sendMessage(sci, SCI_MARKERSETBACK, m, bgColor);
 	}
+}
+
+static void applyAppearanceToView(void* sci, int langIdx, bool isDark)
+{
+	if (!sci) return;
+
+	// Set STYLE_DEFAULT colors
+	ScintillaBridge_sendMessage(sci, SCI_STYLESETFORE, 32, isDark ? 0xD4D4D4 : 0x000000);
+	ScintillaBridge_sendMessage(sci, SCI_STYLESETBACK, 32, isDark ? 0x1E1E1E : 0xFFFFFF);
+	ScintillaBridge_sendMessage(sci, SCI_STYLECLEARALL, 0, 0); // propagate to all
+
+	// Apply per-lexer syntax styles
+	if (langIdx >= 0 && langIdx < g_numLanguages)
+	{
+		const LexerStyles* ls = findLexerStyles(g_languages[langIdx].lexerName);
+		if (ls)
+		{
+			for (int i = 0; i < ls->numStyles; ++i)
+			{
+				const auto& s = ls->styles[i];
+				ScintillaBridge_sendMessage(sci, SCI_STYLESETFORE, s.styleId,
+					isDark ? s.darkFore : s.lightFore);
+				if (s.bold)
+					ScintillaBridge_sendMessage(sci, SCI_STYLESETBOLD, s.styleId, 1);
+				if (s.italic)
+					ScintillaBridge_sendMessage(sci, SCI_STYLESETITALIC, s.styleId, 1);
+			}
+		}
+	}
+
+	// Caret, caret line
+	ScintillaBridge_sendMessage(sci, SCI_SETCARETFORE, isDark ? 0xAEAFAD : 0x000000, 0);
+	ScintillaBridge_sendMessage(sci, SCI_SETCARETLINEBACK, isDark ? 0x2A2A2A : 0xF0F0F0, 0);
+
+	// Line number margin
+	ScintillaBridge_sendMessage(sci, SCI_STYLESETFORE, 33, isDark ? 0x858585 : 0x808080);
+	ScintillaBridge_sendMessage(sci, SCI_STYLESETBACK, 33, isDark ? 0x1E1E1E : 0xF0F0F0);
+
+	// Bookmark marker
+	ScintillaBridge_sendMessage(sci, SCI_MARKERSETBACK, BOOKMARK_MARKER,
+		isDark ? 0xFFA050 : 0xFF8000);
+
+	// Fold marker colors
+	applyFoldMarkerColorsToView(sci, isDark);
 }
 
 static void applyAppearance()
@@ -3246,47 +3629,18 @@ static void applyAppearance()
 		bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
 	bool isDark = [appearanceName isEqualToString:NSAppearanceNameDarkAqua];
 
-	// Set STYLE_DEFAULT colors
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 32, isDark ? 0xD4D4D4 : 0x000000);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBACK, 32, isDark ? 0x1E1E1E : 0xFFFFFF);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLECLEARALL, 0, 0); // propagate to all
-
-	// Apply per-lexer syntax styles
 	int langIdx = 0;
 	if (g_activeTab >= 0 && g_activeTab < static_cast<int>(g_documents.size()))
 		langIdx = g_documents[g_activeTab].languageIndex;
-	if (langIdx >= 0 && langIdx < g_numLanguages)
+	applyAppearanceToView(g_scintillaView, langIdx, isDark);
+
+	if (g_isSplit && g_scintillaView2)
 	{
-		const LexerStyles* ls = findLexerStyles(g_languages[langIdx].lexerName);
-		if (ls)
-		{
-			for (int i = 0; i < ls->numStyles; ++i)
-			{
-				const auto& s = ls->styles[i];
-				ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, s.styleId,
-					isDark ? s.darkFore : s.lightFore);
-				if (s.bold)
-					ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBOLD, s.styleId, 1);
-				if (s.italic)
-					ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETITALIC, s.styleId, 1);
-			}
-		}
+		int langIdx2 = 0;
+		if (g_activeTab2 >= 0 && g_activeTab2 < static_cast<int>(g_documents2.size()))
+			langIdx2 = g_documents2[g_activeTab2].languageIndex;
+		applyAppearanceToView(g_scintillaView2, langIdx2, isDark);
 	}
-
-	// Caret, caret line
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETCARETFORE, isDark ? 0xAEAFAD : 0x000000, 0);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_SETCARETLINEBACK, isDark ? 0x2A2A2A : 0xF0F0F0, 0);
-
-	// Line number margin
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETFORE, 33, isDark ? 0x858585 : 0x808080);
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_STYLESETBACK, 33, isDark ? 0x1E1E1E : 0xF0F0F0);
-
-	// Bookmark marker
-	ScintillaBridge_sendMessage(g_scintillaView, SCI_MARKERSETBACK, BOOKMARK_MARKER,
-		isDark ? 0xFFA050 : 0xFF8000);
-
-	// Fold marker colors
-	applyFoldMarkerColors(isDark);
 }
 
 // ============================================================
@@ -3330,7 +3684,7 @@ static void applyAppearance()
 
 @end
 
-@interface NppPhase7Delegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface NppPhase7Delegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSSplitViewDelegate>
 - (void)performContextAction:(NSMenuItem*)sender;
 @end
 
@@ -3493,7 +3847,9 @@ static void applyAppearance()
 				};
 				auto* scn = reinterpret_cast<const SciNotify*>(lParam);
 
-				if (scn->nmhdr.code == 2010) // SCN_MARGINCLICK
+				if (scn->nmhdr.code == 2028) // SCN_FOCUSIN
+					g_activeView = 0;
+				else if (scn->nmhdr.code == 2010) // SCN_MARGINCLICK
 				{
 					if (scn->margin == 1 && g_scintillaView) // Bookmark margin
 					{
@@ -3637,6 +3993,8 @@ static void applyAppearance()
 		applyAppearance();
 		if (g_scintillaView)
 			ScintillaBridge_sendMessage(g_scintillaView, SCI_COLOURISE, 0, -1);
+		if (g_isSplit && g_scintillaView2)
+			ScintillaBridge_sendMessage(g_scintillaView2, SCI_COLOURISE, 0, -1);
 	});
 }
 
@@ -3696,17 +4054,12 @@ static void applyAppearance()
 	if (g_isSplit && g_scintillaView2)
 		ScintillaBridge_resizeToFit(g_scintillaView2);
 
-	if (g_tabHwnd && g_mainWindow)
-	{
-		auto* tabInfo = HandleRegistry::getWindowInfo(g_tabHwnd);
-		if (tabInfo && tabInfo->nativeView)
-		{
-			NSView* tabView = (__bridge NSView*)tabInfo->nativeView;
-			NSRect f = tabView.frame;
-			f.size.width = g_mainWindow.contentView.bounds.size.width;
-			tabView.frame = f;
-		}
-	}
+	layoutSplitTopTabBars();
+}
+
+- (void)splitViewDidResizeSubviews:(NSNotification*)notification
+{
+	layoutSplitTopTabBars();
 }
 
 @end

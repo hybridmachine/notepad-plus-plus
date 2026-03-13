@@ -446,6 +446,39 @@ target_compile_options(npp_phase6_app PRIVATE
     -Wno-deprecated-declarations
 )
 
+# ============================================================
+# Phase 7: Settings, Split View, Edit Commands, Session, D&D, Encoding
+# ============================================================
+add_executable(npp_phase7_app
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase7.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/settings_manager.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
+)
+target_include_directories(npp_phase7_app PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
+    "${SHIM_INCLUDE_DIR}"
+    "${SCINTILLA_INCLUDE_DIR}"
+    "${LEXILLA_INCLUDE_DIR}"
+    "${UCHARDET_DIR}"
+)
+target_link_libraries(npp_phase7_app
+    win32shim
+    scintilla_bridge
+    Scintilla
+    Lexilla
+    pugixml
+    uchardet
+    "-framework Foundation"
+    "-framework AppKit"
+    "-framework QuartzCore"
+    "-framework UniformTypeIdentifiers"
+    "-framework CoreServices"
+)
+target_compile_options(npp_phase7_app PRIVATE
+    -fobjc-arc
+    -Wno-deprecated-declarations
+)
+
 message(STATUS "=== Notepad++ macOS Port ===")
 message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
 message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
@@ -453,6 +486,7 @@ message(STATUS "Phase 3: Tabs + Multi-Document app (npp_phase3_app)")
 message(STATUS "Phase 4: Find/Replace + Dialogs app (npp_phase4_app)")
 message(STATUS "Phase 5: Advanced Editor Features app (npp_phase5_app)")
 message(STATUS "Phase 6: Syntax Highlighting + Code Folding app (npp_phase6_app)")
+message(STATUS "Phase 7: Settings, Split View, Edit, Encoding app (npp_phase7_app)")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

@@ -4,6 +4,18 @@
 #import <Foundation/Foundation.h>
 #include "settings_manager.h"
 
+namespace
+{
+static NSString* stringFromFileSystemPath(const std::string& fileSystemPath)
+{
+	if (fileSystemPath.empty())
+		return nil;
+
+	return [[NSFileManager defaultManager] stringWithFileSystemRepresentation:fileSystemPath.c_str()
+	                                                                   length:fileSystemPath.size()];
+}
+}
+
 SettingsManager& SettingsManager::instance()
 {
 	static SettingsManager mgr;
@@ -21,12 +33,16 @@ std::string SettingsManager::settingsDir() const
 
 std::string SettingsManager::settingsPath() const
 {
-	return settingsDir() + "/settings.json";
+	std::string dir = settingsDir();
+	if (dir.empty()) return "";
+	return dir + "/settings.json";
 }
 
 bool SettingsManager::load()
 {
-	NSString* path = [NSString stringWithUTF8String:settingsPath().c_str()];
+	NSString* path = stringFromFileSystemPath(settingsPath());
+	if (!path) return false;
+
 	NSData* data = [NSData dataWithContentsOfFile:path];
 	if (!data) return false;
 
@@ -45,7 +61,12 @@ bool SettingsManager::load()
 	if ([json[@"windowHeight"] isKindOfClass:[NSNumber class]]) settings.windowHeight = [json[@"windowHeight"] doubleValue];
 
 	// Editor preferences
-	if ([json[@"fontName"] isKindOfClass:[NSString class]])  settings.fontName = [json[@"fontName"] UTF8String];
+	if ([json[@"fontName"] isKindOfClass:[NSString class]])
+	{
+		const char* fontName = [json[@"fontName"] UTF8String];
+		if (fontName)
+			settings.fontName = fontName;
+	}
 	if ([json[@"fontSize"] isKindOfClass:[NSNumber class]])  settings.fontSize = [json[@"fontSize"] intValue];
 	if ([json[@"tabWidth"] isKindOfClass:[NSNumber class]])  settings.tabWidth = [json[@"tabWidth"] intValue];
 
@@ -61,7 +82,11 @@ bool SettingsManager::load()
 		for (NSString* f in recent)
 		{
 			if ([f isKindOfClass:[NSString class]])
-				settings.recentFiles.push_back([f UTF8String]);
+			{
+				const char* recentFile = [f UTF8String];
+				if (recentFile)
+					settings.recentFiles.push_back(recentFile);
+			}
 		}
 	}
 
@@ -71,28 +96,41 @@ bool SettingsManager::load()
 bool SettingsManager::save()
 {
 	// Ensure directory exists
-	NSString* dir = [NSString stringWithUTF8String:settingsDir().c_str()];
-	[[NSFileManager defaultManager] createDirectoryAtPath:dir
-	                          withIntermediateDirectories:YES
-	                                          attributes:nil
-	                                               error:nil];
+	NSString* dir = stringFromFileSystemPath(settingsDir());
+	if (!dir) return false;
+
+	if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
+	                               withIntermediateDirectories:YES
+	                                               attributes:nil
+	                                                    error:nil])
+	{
+		return false;
+	}
 
 	// Build JSON dictionary
 	NSMutableArray* recentArr = [NSMutableArray array];
 	for (const auto& f : settings.recentFiles)
-		[recentArr addObject:[NSString stringWithUTF8String:f.c_str()]];
+	{
+		NSString* recent = [NSString stringWithUTF8String:f.c_str()];
+		if (recent)
+			[recentArr addObject:recent];
+	}
+
+	NSString* fontName = [NSString stringWithUTF8String:settings.fontName.c_str()];
+	if (!fontName)
+		fontName = @"";
 
 	NSDictionary* json = @{
 		@"windowX":      @(settings.windowX),
 		@"windowY":      @(settings.windowY),
 		@"windowWidth":  @(settings.windowWidth),
 		@"windowHeight": @(settings.windowHeight),
-		@"fontName":     [NSString stringWithUTF8String:settings.fontName.c_str()],
+		@"fontName":     fontName,
 		@"fontSize":     @(settings.fontSize),
 		@"tabWidth":     @(settings.tabWidth),
 		@"wordWrap":     @(settings.wordWrap),
 		@"showLineNumbers": @(settings.showLineNumbers),
-		@"recentFiles":  recentArr,
+		@"recentFiles":  recentArr
 	};
 
 	NSError* error = nil;
@@ -101,6 +139,8 @@ bool SettingsManager::save()
 	                                                error:&error];
 	if (!data || error) return false;
 
-	NSString* path = [NSString stringWithUTF8String:settingsPath().c_str()];
+	NSString* path = stringFromFileSystemPath(settingsPath());
+	if (!path) return false;
+
 	return [data writeToFile:path atomically:YES];
 }

@@ -121,20 +121,20 @@ add_library(uchardet STATIC ${UCHARDET_SOURCES})
 target_include_directories(uchardet PUBLIC "${UCHARDET_DIR}")
 
 # ============================================================
-# Notepad++ PowerEditor Sources (Phase 0: non-GUI subset)
+# Notepad++ PowerEditor Sources (compatibility compile subset)
 # ============================================================
 set(NPP_SRC_DIR "${NPP_ROOT}/PowerEditor/src")
 
-# For Phase 0, we compile a minimal subset to verify the shim works.
+# We compile a minimal subset to verify the shim works.
 # These files are core logic that should compile with the shim headers.
-# More files will be added in subsequent phases.
+# This target is for compilation verification only.
 
-# Phase 0 target: just verify the shim + vendored libs compile
+# Compile-test target: just verify the shim + vendored libs compile
 # and that key N++ headers can be parsed.
-# Phase 0: Compile a simple test file that includes key N++ headers
+# Compile a simple test file that includes key N++ headers
 # through the shim layer. Actual N++ source files will be added
 # incrementally as we stub out more Windows-only headers.
-add_library(npp_phase0_test STATIC
+add_library(npp_macos_compile_test STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/npp_headers_test.cpp"
     "${NPP_SRC_DIR}/MISC/sha2/sha-256.cpp"
     "${NPP_SRC_DIR}/Utf8_16.cpp"
@@ -182,12 +182,12 @@ file(GLOB_RECURSE NPP_WINCONTROLS_SOURCES "${NPP_SRC_DIR}/WinControls/*.cpp")
 list(FILTER NPP_WINCONTROLS_SOURCES EXCLUDE REGEX "ReadDirectoryChanges")
 list(FILTER NPP_WINCONTROLS_SOURCES EXCLUDE REGEX "CustomFileDialog")  # Uses IFileDialog COM - replace with NSOpenPanel/NSSavePanel
 list(FILTER NPP_WINCONTROLS_SOURCES EXCLUDE REGEX "pluginsAdmin")      # Uses WinInet - replace with NSURLSession
-target_sources(npp_phase0_test PRIVATE ${NPP_WINCONTROLS_SOURCES})
+target_sources(npp_macos_compile_test PRIVATE ${NPP_WINCONTROLS_SOURCES})
 # Gather all subdirectories under WinControls/ for includes
 file(GLOB NPP_WINCONTROLS_DIRS "${NPP_SRC_DIR}/WinControls/*/")
 file(GLOB NPP_MISC_DIRS "${NPP_SRC_DIR}/MISC/*/")
 
-target_include_directories(npp_phase0_test
+target_include_directories(npp_macos_compile_test
     PRIVATE "${SHIM_INCLUDE_DIR}"     # Must be first!
     PRIVATE "${NPP_SRC_DIR}"
     PRIVATE "${NPP_SRC_DIR}/MISC"
@@ -205,7 +205,7 @@ target_include_directories(npp_phase0_test
     PRIVATE "${PUGIXML_DIR}"
     PRIVATE "${UCHARDET_DIR}"
 )
-target_compile_definitions(npp_phase0_test PRIVATE
+target_compile_definitions(npp_macos_compile_test PRIVATE
     UNICODE
     _UNICODE
     __APPLE__
@@ -214,7 +214,7 @@ target_compile_definitions(npp_phase0_test PRIVATE
     "NPP_LEXILLA_VERSION=\"5.4.0\""
     "NPP_BOOST_REGEX_VERSION=\"1.90.0\""
 )
-target_compile_options(npp_phase0_test PRIVATE
+target_compile_options(npp_macos_compile_test PRIVATE
     -Wno-deprecated-declarations
     -Wno-writable-strings
     -Wno-unused-parameter
@@ -223,17 +223,17 @@ target_compile_options(npp_phase0_test PRIVATE
     -Wno-c++11-narrowing
     -include "${SHIM_INCLUDE_DIR}/windows.h"
 )
-target_link_libraries(npp_phase0_test
+target_link_libraries(npp_macos_compile_test
     win32shim
     pugixml
     uchardet
 )
 
 # ============================================================
-# Phase 0 verification target
+# Compatibility verification target
 # ============================================================
 # This executable just links everything together to verify compilation.
-# It's not a runnable app yet - that comes in Phase 1.
+# It's not the primary runnable app target.
 add_executable(npp_build_test
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/build_test.mm"
 )
@@ -284,52 +284,21 @@ target_link_libraries(win32shim PUBLIC
 )
 
 # ============================================================
-# Phase 2: File I/O + Menus App
+# Main macOS app target
 # ============================================================
-# Win32 menu APIs backed by NSMenu, file open/save via dialogs,
-# WM_COMMAND dispatch from menus to WndProc, timers, clipboard.
-add_executable(npp_phase2_app
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main.mm"
-)
-target_include_directories(npp_phase2_app PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
-    "${SHIM_INCLUDE_DIR}"
-    "${SCINTILLA_INCLUDE_DIR}"
-    "${LEXILLA_INCLUDE_DIR}"
-)
-target_link_libraries(npp_phase2_app
-    win32shim
-    scintilla_bridge
-    Scintilla
-    Lexilla
-    pugixml
-    uchardet
-    "-framework Foundation"
-    "-framework AppKit"
-    "-framework QuartzCore"
-    "-framework UniformTypeIdentifiers"
-)
-target_compile_options(npp_phase2_app PRIVATE
-    -fobjc-arc
-    -Wno-deprecated-declarations
-)
-
-# ============================================================
-# Phase 3: Tabs + Multi-Document App
-# ============================================================
-# Tab control (SysTabControl32), status bar (msctls_statusbar32),
-# WM_NOTIFY dispatch, file monitoring via FSEvents, multi-document editing.
-add_executable(npp_phase3_app
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase3.mm"
+add_executable(MacOSNotePP
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase7.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/settings_manager.mm"
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
 )
-target_include_directories(npp_phase3_app PRIVATE
+target_include_directories(MacOSNotePP PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/platform"
     "${SHIM_INCLUDE_DIR}"
     "${SCINTILLA_INCLUDE_DIR}"
     "${LEXILLA_INCLUDE_DIR}"
+    "${UCHARDET_DIR}"
 )
-target_link_libraries(npp_phase3_app
+target_link_libraries(MacOSNotePP
     win32shim
     scintilla_bridge
     Scintilla
@@ -342,83 +311,82 @@ target_link_libraries(npp_phase3_app
     "-framework UniformTypeIdentifiers"
     "-framework CoreServices"
 )
-target_compile_options(npp_phase3_app PRIVATE
+target_compile_options(MacOSNotePP PRIVATE
     -fobjc-arc
     -Wno-deprecated-declarations
+)
+add_custom_command(TARGET MacOSNotePP POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${NPP_ROOT}/logo.png"
+        "$<TARGET_FILE_DIR:MacOSNotePP>/logo.png"
+    COMMENT "Copying logo.png for Dock icon"
 )
 
 # ============================================================
-# Phase 4: Find/Replace + Essential Dialogs App
+# Packaging: App bundle + unsigned DMG
 # ============================================================
-# Dialog subsystem, Find/Replace, Go To Line, dialog controls
-# (Button, Edit, Static, CheckBox), GetDlgItem, dark mode.
-add_executable(npp_phase4_app
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase4.mm"
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
-)
-target_include_directories(npp_phase4_app PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
-    "${SHIM_INCLUDE_DIR}"
-    "${SCINTILLA_INCLUDE_DIR}"
-    "${LEXILLA_INCLUDE_DIR}"
-)
-target_link_libraries(npp_phase4_app
-    win32shim
-    scintilla_bridge
-    Scintilla
-    Lexilla
-    pugixml
-    uchardet
-    "-framework Foundation"
-    "-framework AppKit"
-    "-framework QuartzCore"
-    "-framework UniformTypeIdentifiers"
-    "-framework CoreServices"
-)
-target_compile_options(npp_phase4_app PRIVATE
-    -fobjc-arc
-    -Wno-deprecated-declarations
+set(NPP_MACOS_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+set(NPP_MACOS_APP_BUNDLE "${NPP_MACOS_DIST_DIR}/MacNote++.app")
+set(NPP_MACOS_APP_CONTENTS "${NPP_MACOS_APP_BUNDLE}/Contents")
+set(NPP_MACOS_APP_MACOS "${NPP_MACOS_APP_CONTENTS}/MacOS")
+set(NPP_MACOS_APP_RESOURCES "${NPP_MACOS_APP_CONTENTS}/Resources")
+set(NPP_MACOS_DMG_ROOT "${NPP_MACOS_DIST_DIR}/dmg-root")
+set(NPP_MACOS_DMG_APP_BUNDLE "${NPP_MACOS_DMG_ROOT}/MacNote++.app")
+set(NPP_MACOS_UNSIGNED_DMG "${NPP_MACOS_DIST_DIR}/MacNote++-unsigned.dmg")
+set(NPP_MACOS_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/MacNote++-Info.plist")
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/MacNoteInfo.plist.in"
+    "${NPP_MACOS_INFO_PLIST}"
+    @ONLY
 )
 
-# ============================================================
-# Phase 5: Advanced Editor Features App
-# ============================================================
-# Regex search, recent files, bookmarks, auto-completion,
-# context menus, preferences dialog, language selection.
-add_executable(npp_phase5_app
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform/main_phase5.mm"
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform/file_monitor_mac.mm"
+add_custom_target(MacOSNotePP_package
+    DEPENDS MacOSNotePP
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${NPP_MACOS_APP_BUNDLE}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${NPP_MACOS_APP_MACOS}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${NPP_MACOS_APP_RESOURCES}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:MacOSNotePP>"
+        "${NPP_MACOS_APP_MACOS}/MacOSNotePP"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${NPP_ROOT}/logo.png"
+        "${NPP_MACOS_APP_MACOS}/logo.png"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${NPP_ROOT}/logo.png"
+        "${NPP_MACOS_APP_RESOURCES}/logo.png"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${NPP_MACOS_INFO_PLIST}"
+        "${NPP_MACOS_APP_CONTENTS}/Info.plist"
+    COMMENT "Packaging MacNote++.app"
 )
-target_include_directories(npp_phase5_app PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/platform"
-    "${SHIM_INCLUDE_DIR}"
-    "${SCINTILLA_INCLUDE_DIR}"
-    "${LEXILLA_INCLUDE_DIR}"
-)
-target_link_libraries(npp_phase5_app
-    win32shim
-    scintilla_bridge
-    Scintilla
-    Lexilla
-    pugixml
-    uchardet
-    "-framework Foundation"
-    "-framework AppKit"
-    "-framework QuartzCore"
-    "-framework UniformTypeIdentifiers"
-    "-framework CoreServices"
-)
-target_compile_options(npp_phase5_app PRIVATE
-    -fobjc-arc
-    -Wno-deprecated-declarations
+
+add_custom_target(MacOSNotePP_dmg
+    DEPENDS MacOSNotePP_package
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${NPP_MACOS_DMG_ROOT}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${NPP_MACOS_DMG_APP_BUNDLE}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${NPP_MACOS_APP_BUNDLE}"
+        "${NPP_MACOS_DMG_APP_BUNDLE}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${NPP_MACOS_DMG_ROOT}/Applications"
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "/Applications"
+        "${NPP_MACOS_DMG_ROOT}/Applications"
+    COMMAND ${CMAKE_COMMAND} -E rm -f "${NPP_MACOS_UNSIGNED_DMG}"
+    COMMAND hdiutil create
+        -volname "MacNote++"
+        -srcfolder "${NPP_MACOS_DMG_ROOT}"
+        -format UDZO
+        -ov
+        "${NPP_MACOS_UNSIGNED_DMG}"
+    COMMENT "Building MacNote++-unsigned.dmg"
 )
 
 message(STATUS "=== Notepad++ macOS Port ===")
-message(STATUS "Phase 0: Shim compilation test (npp_phase0_test)")
-message(STATUS "Phase 2: File I/O + Menus app (npp_phase2_app)")
-message(STATUS "Phase 3: Tabs + Multi-Document app (npp_phase3_app)")
-message(STATUS "Phase 4: Find/Replace + Dialogs app (npp_phase4_app)")
-message(STATUS "Phase 5: Advanced Editor Features app (npp_phase5_app)")
+message(STATUS "Compatibility compile target: npp_macos_compile_test")
+message(STATUS "App target: MacOSNotePP")
+message(STATUS "Packaging target: MacOSNotePP_package")
+message(STATUS "Unsigned DMG target: MacOSNotePP_dmg")
 message(STATUS "Shim headers: ${SHIM_INCLUDE_DIR}")
 message(STATUS "Scintilla: ${SCINTILLA_DIR}")
 message(STATUS "Lexilla: ${LEXILLA_DIR}")

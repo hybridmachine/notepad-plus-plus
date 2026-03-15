@@ -3684,6 +3684,18 @@ static void applyAppearance()
 
 @end
 
+static void setDockIconFromLogo()
+{
+	NSString* executablePath = [[NSBundle mainBundle] executablePath];
+	if (!executablePath)
+		return;
+
+	NSString* logoPath = [[executablePath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"logo.png"];
+	NSImage* dockIcon = [[NSImage alloc] initWithContentsOfFile:logoPath];
+	if (dockIcon)
+		[NSApp setApplicationIconImage:dockIcon];
+}
+
 @interface NppPhase7Delegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSSplitViewDelegate>
 - (void)performContextAction:(NSMenuItem*)sender;
 @end
@@ -3699,6 +3711,7 @@ static void applyAppearance()
 	g_fontSize = s.fontSize;
 	g_tabWidth = s.tabWidth;
 	g_showLineNumbers = s.showLineNumbers;
+	setDockIconFromLogo();
 
 	// Restore recent files from settings
 	g_recentFiles.clear();

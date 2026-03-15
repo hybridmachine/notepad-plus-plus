@@ -13,7 +13,10 @@ SettingsManager& SettingsManager::instance()
 std::string SettingsManager::settingsDir() const
 {
 	NSString* home = NSHomeDirectory();
-	return std::string([home UTF8String]) + "/.npp-macos";
+	NSString* dir = [home stringByAppendingPathComponent:@".npp-macos"];
+	const char* fs = [dir fileSystemRepresentation];
+	if (!fs) return "";
+	return std::string(fs);
 }
 
 std::string SettingsManager::settingsPath() const
@@ -28,26 +31,27 @@ bool SettingsManager::load()
 	if (!data) return false;
 
 	NSError* error = nil;
-	NSDictionary* json = [NSJSONSerialization JSONObjectWithData:data
-	                                                    options:0
-	                                                      error:&error];
-	if (!json || error) return false;
+	id parsed = [NSJSONSerialization JSONObjectWithData:data
+	                                            options:0
+	                                              error:&error];
+	if (!parsed || error) return false;
+	if (![parsed isKindOfClass:[NSDictionary class]]) return false;
+	NSDictionary* json = parsed;
 
 	// Window geometry
-	if (json[@"windowX"])      settings.windowX = [json[@"windowX"] doubleValue];
-	if (json[@"windowY"])      settings.windowY = [json[@"windowY"] doubleValue];
-	if (json[@"windowWidth"])  settings.windowWidth = [json[@"windowWidth"] doubleValue];
-	if (json[@"windowHeight"]) settings.windowHeight = [json[@"windowHeight"] doubleValue];
+	if ([json[@"windowX"] isKindOfClass:[NSNumber class]])      settings.windowX = [json[@"windowX"] doubleValue];
+	if ([json[@"windowY"] isKindOfClass:[NSNumber class]])      settings.windowY = [json[@"windowY"] doubleValue];
+	if ([json[@"windowWidth"] isKindOfClass:[NSNumber class]])  settings.windowWidth = [json[@"windowWidth"] doubleValue];
+	if ([json[@"windowHeight"] isKindOfClass:[NSNumber class]]) settings.windowHeight = [json[@"windowHeight"] doubleValue];
 
 	// Editor preferences
-	if (json[@"fontName"])  settings.fontName = [json[@"fontName"] UTF8String];
-	if (json[@"fontSize"])  settings.fontSize = [json[@"fontSize"] intValue];
-	if (json[@"tabWidth"])  settings.tabWidth = [json[@"tabWidth"] intValue];
+	if ([json[@"fontName"] isKindOfClass:[NSString class]])  settings.fontName = [json[@"fontName"] UTF8String];
+	if ([json[@"fontSize"] isKindOfClass:[NSNumber class]])  settings.fontSize = [json[@"fontSize"] intValue];
+	if ([json[@"tabWidth"] isKindOfClass:[NSNumber class]])  settings.tabWidth = [json[@"tabWidth"] intValue];
 
 	// View state
-	if (json[@"wordWrap"])        settings.wordWrap = [json[@"wordWrap"] boolValue];
-	if (json[@"showLineNumbers"]) settings.showLineNumbers = [json[@"showLineNumbers"] boolValue];
-	if (json[@"darkModePreference"]) settings.darkModePreference = [json[@"darkModePreference"] intValue];
+	if ([json[@"wordWrap"] isKindOfClass:[NSNumber class]])        settings.wordWrap = [json[@"wordWrap"] boolValue];
+	if ([json[@"showLineNumbers"] isKindOfClass:[NSNumber class]]) settings.showLineNumbers = [json[@"showLineNumbers"] boolValue];
 
 	// Recent files
 	settings.recentFiles.clear();
@@ -88,7 +92,6 @@ bool SettingsManager::save()
 		@"tabWidth":     @(settings.tabWidth),
 		@"wordWrap":     @(settings.wordWrap),
 		@"showLineNumbers": @(settings.showLineNumbers),
-		@"darkModePreference": @(settings.darkModePreference),
 		@"recentFiles":  recentArr,
 	};
 

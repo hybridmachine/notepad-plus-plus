@@ -22,9 +22,6 @@ struct AppSettings
 	bool wordWrap = false;
 	bool showLineNumbers = true;
 
-	// Dark mode: 0=follow system, 1=force light, 2=force dark
-	int darkModePreference = 0;
-
 	// Recent files
 	std::vector<std::string> recentFiles;
 };

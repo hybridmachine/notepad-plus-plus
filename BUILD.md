@@ -72,3 +72,17 @@ Building Notepad++ is regularly tested on a Windows system by using [MSYS2](http
 - When a project is built through MinGW-w64 with multilib support, a specific target can be forced by passing `TARGET_CPU` variable with `x86_64` or `i686` as value.
 - To use Clang instead of GCC for compilation provide `CXX` variable with `clang++` as value.
 - To use [Clang analyzer](https://clang-analyzer.llvm.org/) together with Clang provide `CLANGANALYZE=1` to the `mingw32-make` invocation.
+
+## macOS (experimental port)
+
+The macOS port uses CMake from the `macos/` directory.
+
+1. Configure: `cmake -S macos -B macos/build`
+2. Build app binary: `cmake --build macos/build --target MacOSNotePP`
+3. Package app bundle: `cmake --build macos/build --target MacOSNotePP_package`
+4. Build unsigned DMG: `cmake --build macos/build --target MacOSNotePP_dmg`
+
+Artifacts are generated in `macos/dist/`:
+
+- `MacNote++.app`
+- `MacNote++-unsigned.dmg`
